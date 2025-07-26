@@ -1,4 +1,5 @@
 #include "MlpSetUInt64.h"
+#include <stdlib.h>
 
 namespace MlpSetUInt64
 {
@@ -1128,12 +1129,15 @@ void MlpSet::Init(uint32_t maxSetSize)
 	//
 	sz += (htSize + 6) * sizeof(CuckooHashTableNode);
 	
-	m_memoryPtr = mmap(NULL, 
-	                   sz, 
-	                   PROT_READ | PROT_WRITE, 
-	                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, 
-	                   -1 /*fd*/, 
-	                   0 /*offset*/);
+	int ret = posix_memalign(&m_memoryPtr, 4096, sz);
+	ReleaseAssert(!ret);
+	//m_memoryPtr = malloc(sz);
+	// m_memoryPtr = mmap(NULL, 
+	//                    sz, 
+	//                    PROT_READ | PROT_WRITE, 
+	//                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, 
+	//                    -1 /*fd*/, 
+	//                    0 /*offset*/);
 	ReleaseAssert(m_memoryPtr != MAP_FAILED);
 	m_allocatedSize = sz;
 		
