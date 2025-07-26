@@ -364,6 +364,9 @@ public:
 	// Insert an element, returns true if the insertion took place, false if the element already exists
 	//
 	bool Insert(uint64_t value);
+
+	// Removes an element, returns true if the removal took place, false if the element doesn't exists
+	bool Remove(uint64_t value);
 	
 	// Returns whether the specified value exists in the set
 	//

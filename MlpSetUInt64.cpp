@@ -1150,6 +1150,17 @@ void MlpSet::Init(uint32_t maxSetSize)
 	memset(m_memoryPtr, 0, m_allocatedSize);
 }
 
+bool MlpSet::Remove(uint64_t value)
+{
+	int lcpLen = m_hashTable.QueryLCP(value, 
+		ilen /*out*/, 
+		allPositions1 /*out*/, 
+		allPositions2 /*out*/, 
+		expectedHash /*out*/);
+
+	return true;
+}
+
 bool MlpSet::Insert(uint64_t value)
 {
 	assert(m_hasCalledInit);
