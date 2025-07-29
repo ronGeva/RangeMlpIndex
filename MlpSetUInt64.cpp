@@ -1042,8 +1042,7 @@ MlpSet::~MlpSet()
 {
 	if (m_memoryPtr != nullptr && m_memoryPtr != MAP_FAILED)
 	{
-		int ret = SAFE_HUGETLB_MUNMAP(m_memoryPtr, m_allocatedSize);
-		assert(ret == 0);
+		free(m_memoryPtr);
 		m_memoryPtr = nullptr;
 	}
 }
