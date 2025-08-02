@@ -517,6 +517,12 @@ void CuckooHashTableNode::AddChild(int child)
 	BitMapSet(child);
 }
 
+void CuckooHashTableNode::RemoveChild(int child)
+{
+	// TODO: implement this
+	child;
+}
+
 vector<int> CuckooHashTableNode::GetAllChildren()
 {
 	assert(IsNode());
@@ -819,6 +825,36 @@ uint32_t CuckooHashTable::Lookup(int ilen, uint64_t ikey, bool& found)
 		return h2;
 	}
 	return -1;
+}
+
+bool CuckooHashTable::Remove(int ilen, uint64_t key)
+{
+	assert(m_hasCalledInit);
+
+	uint32_t hash18bit = XXH::XXHashFn3(key, ilen);
+	hash18bit = hash18bit & ((1<<18) - 1);
+	uint32_t expectedHash = hash18bit | ((ilen-1) << 27) | 0x80000000U;
+	int shiftLen = 64 - 8 * ilen;
+	uint64_t shiftedMinKey = key >> shiftLen;
+
+	uint32_t h1, h2;
+	h1 = XXH::XXHashFn1(key, ilen) & htMask;
+	h2 = XXH::XXHashFn2(key, ilen) & htMask;
+
+	MEM_PREFETCH(ht[h1]);
+	MEM_PREFETCH(ht[h2]);
+
+	if (ht[h1].IsEqual(expectedHash, shiftLen, shiftedMinKey))
+	{
+		ht[h1].Clear();
+		return true;
+	}
+	if (ht[h2].IsEqual(expectedHash, shiftLen, shiftedMinKey))
+	{
+		ht[h2].Clear();
+		return true;
+	}
+	return false;
 }
 
 CuckooHashTable::LookupMustExistPromise CuckooHashTable::GetLookupMustExistPromise(int ilen, uint64_t ikey)
@@ -1151,11 +1187,44 @@ void MlpSet::Init(uint32_t maxSetSize)
 
 bool MlpSet::Remove(uint64_t value)
 {
+	uint32_t ilen;
+	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
+	uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
+	uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
+	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
+
 	int lcpLen = m_hashTable.QueryLCP(value, 
 		ilen /*out*/, 
 		allPositions1 /*out*/, 
 		allPositions2 /*out*/, 
 		expectedHash /*out*/);
+
+	if (lcpLen < 8)
+	{
+		// If the LCP is less than 8, we cannot remove it
+		// because it is not a full key in the hash table
+		return false;
+	}
+
+	// Remove the node from the hash table
+	assert(m_hashTable.Remove(ilen, value));
+
+	// TODO: handle the case where the node appears as a child of another node.
+	// This requires us to find the parent node and remove the child from it, then remove the
+	// parent as well if it has 0 children or if it has a single child and it isn't needed
+	// for the binary search.
+	// In addition, we need to update all ancestor of the node in which it appears as the minkey.
+	// For each node in which value is the minkey, we need to find the next smallest key, which
+	// should be the minkey of its now smallest child.
+	//
+	// The code should look something like this:
+	// for (int i = ilen - 1; i >= 0; --i)
+	// {
+	//   CuckooHashTableNode& node = m_hashTable.ht[allPositions1[i]];
+	//   if (node.minKey == value)
+	//   {
+	//     node.minkey = node.childList[0].minkey;
+	//   }
 
 	return true;
 }

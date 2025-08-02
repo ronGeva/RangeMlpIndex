@@ -43,6 +43,14 @@ struct CuckooHashTableNode
 	// so constructors will not be called
 	//
 	
+	void Clear()
+	{
+		hash = 0;
+		minvOffset = 0;
+		minKey = 0;
+		childMap = 0;
+	}
+
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)
 	{
 		return ((hash & 0xf803ffffU) == expectedHash) && (minKey >> shiftLen == shiftedKey);
@@ -186,6 +194,9 @@ struct CuckooHashTableNode
 	//
 	void AddChild(int child);
 
+	// Remove a child, must exist
+	void RemoveChild(int child);
+
 	// for debug only, get list of all children in sorted order
 	//
 	vector<int> GetAllChildren();
@@ -297,6 +308,10 @@ public:
 	// Single point lookup, returns index in hash table if found
 	//
 	uint32_t Lookup(int ilen, uint64_t ikey, bool& found);
+
+	// Removes a node from the hash table
+	// Returns true if the node is removed, false if it does not exist
+	bool Remove(int ilen, uint64_t key);
 
 	// Single point lookup on a key that is supposed to exist
 	//
