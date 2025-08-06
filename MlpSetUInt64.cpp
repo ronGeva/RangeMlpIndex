@@ -1209,22 +1209,50 @@ bool MlpSet::Remove(uint64_t value)
 	// Remove the node from the hash table
 	assert(m_hashTable.Remove(ilen, value));
 
-	// TODO: handle the case where the node appears as a child of another node.
-	// This requires us to find the parent node and remove the child from it, then remove the
-	// parent as well if it has 0 children or if it has a single child and it isn't needed
-	// for the binary search.
-	// In addition, we need to update all ancestor of the node in which it appears as the minkey.
-	// For each node in which value is the minkey, we need to find the next smallest key, which
-	// should be the minkey of its now smallest child.
-	//
-	// The code should look something like this:
-	// for (int i = ilen - 1; i >= 0; --i)
-	// {
-	//   CuckooHashTableNode& node = m_hashTable.ht[allPositions1[i]];
-	//   if (node.minKey == value)
-	//   {
-	//     node.minkey = node.childList[0].minkey;
-	//   }
+	bool found = false;
+	uint64_t successor = LowerBound(value + 1, found);
+
+	// handle L1 cache
+	if (!found || ((successor >> 54) != (value >> 54)))
+	{
+		// nullify the bit from the L1 cache
+		uint64_t h16bits = value >> 48;
+		m_treeDepth1[value >> 54] &= ~(uint64_t(1) << (h16bits % 64));
+	}
+
+	// handle L2 cache
+	if (!found || ((successor >> 46) != (value >> 46)))
+	{
+		// nullify the bit from the L2 cache
+		uint64_t h24bits = value >> 40;
+		m_treeDepth2[value >> 46] &= ~(uint64_t(1) << (h24bits % 64));
+	}
+	
+	if (!found)
+		return true;
+
+	for (ilen--; ilen > 2; ilen--)
+	{
+		// find the right position
+		uint32_t pos = allPositions1[ilen - 1];
+		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
+		{
+			pos = allPositions2[ilen - 1];
+		}
+
+		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
+		{
+			// empty node
+			continue;
+		}
+
+		if (value == m_hashTable.ht[pos].minKey)
+		{
+			m_hashTable.ht[pos].minKey = successor;
+		}
+	}
+	
+	// TODO: handle path compression, remove children from intermittent nodes 
 
 	return true;
 }
