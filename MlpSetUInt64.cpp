@@ -243,34 +243,61 @@ int CuckooHashTableNode::FindNeighboringEmptySlot()
 	return 0;
 }
 	
-void CuckooHashTableNode::BitMapSet(int child)
+void CuckooHashTableNode::BitMapSet(int child, bool on/*=true*/)
 {
 	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap());
 	assert(0 <= child && child <= 255);
+	uint64_t* ptr;
+
 	if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap);
-		ptr[child / 64] |= uint64_t(1) << (child % 64);
+		ptr = reinterpret_cast<uint64_t*>(childMap);
+		ptr = &ptr[child / 64];
 	}
 	else
 	{
 		if (child < 64)
 		{
-			childMap |= uint64_t(1) << child;
+			if (on)
+			{
+				childMap |= uint64_t(1) << child;
+			}
+			else
+			{
+				childMap &= ~(uint64_t(1) << child);
+			}
+			return;
 		}
 		else
 		{
 			if (child == 94 || child == 95)
 			{
-				hash |= 1 << (child - 76);
+				if (on)
+				{
+					hash |= 1 << (child - 76);
+				}
+				else
+				{
+					hash &= ~(1 << (child - 76));
+				}
+				return;
 			}
 			else
 			{
 				int offset = ((hash >> 21) & 7) - 4;
-				uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
-				ptr[child / 64 - 1] |= uint64_t(1) << (child % 64);
+				ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
+				ptr = &ptr[child / 64 - 1];
 			}
 		}
+	}
+
+	if (on)
+	{
+		(*ptr) |= uint64_t(1) << (child % 64);
+	}
+	else
+	{
+		(*ptr) &= ~(uint64_t(1) << (child % 64));
 	}
 }
 	
@@ -519,8 +546,32 @@ void CuckooHashTableNode::AddChild(int child)
 
 void CuckooHashTableNode::RemoveChild(int child)
 {
-	// TODO: implement this
-	child;
+	assert(IsNode() && !IsLeaf());
+	assert(0 <= child && child <= 255);
+	assert(ExistChild(child));
+	if (IsUsingInternalChildMap())
+	{
+		int k = GetChildNum();
+		if (likely(k < 8))
+		{
+			SetChildNum(k+1);
+			__m64 z = _mm_cvtsi64_m64(childMap);
+			__m64 cmpTarget = _mm_set1_pi8(child);
+			__m64 res = _mm_max_pu8(cmpTarget, z);
+			res = _mm_cmpeq_pi8(cmpTarget, res);
+			int msk = _mm_movemask_pi8(res);
+			msk &= (1<<k)-1;
+			msk++;
+			int pos = __builtin_ffs(msk);
+			assert(1 <= pos && pos <= k + 1);
+			uint64_t larger = (pos == 8) ? 0 : (childMap >> ((pos-1)*8) << (pos*8));
+			uint64_t smaller = childMap & ((uint64_t(1) << ((pos-1)*8)) - 1);
+			childMap = smaller | larger;
+			childMap &= ~(uint64_t(child) << ((pos - 1)*8));
+			return; // TODO: this doesn't work, make it work
+		}
+	}
+	BitMapSet(child, false);
 }
 
 vector<int> CuckooHashTableNode::GetAllChildren()
@@ -1185,6 +1236,68 @@ void MlpSet::Init(uint32_t maxSetSize)
 	memset(m_memoryPtr, 0, m_allocatedSize);
 }
 
+void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
+{
+	if (successor.has_value() && ((*successor >> 54) != (value >> 54)))
+	{
+		// successor occupies the same L1 bit
+		return;
+	}
+
+	bool found;
+	uint64_t smallest_in_range = LowerBound((value >> 54) << 54, found);
+	if (found && smallest_in_range < value)
+	{
+		// there's an item in the data structure smaller than value but bigger
+		// than the minimal number that would have those high bits, meaning
+		// it occupies the same L1 bit
+		return;
+	}
+
+	// nullify the bit from the L1 cache
+	uint64_t h16bits = value >> 48;
+	m_treeDepth1[value >> 54] &= ~(uint64_t(1) << (h16bits % 64));
+}
+
+void MlpSet::ClearL2Cache(uint64_t value, std::optional<uint64_t> successor)
+{
+	if (successor.has_value() && ((*successor >> 46) != (value >> 46)))
+	{
+		// successor occupies the same L2 bit
+		return;
+	}
+
+	bool found;
+	uint64_t smallest_in_range = LowerBound((value >> 46) << 46, found);
+	if (found && smallest_in_range < value)
+	{
+		// there's an item in the data structure smaller than value but bigger
+		// than the minimal number that would have those high bits, meaning
+		// it occupies the same L2 bit
+		return;
+	}
+
+	// nullify the bit from the L2 cache
+	uint64_t h24bits = value >> 40;
+	m_treeDepth2[value >> 46] &= ~(uint64_t(1) << (h24bits % 64));
+}
+
+std::optional<uint64_t> MlpSet::ClearL1AndL2Caches(uint64_t value)
+{
+	bool found_successor = false;
+	uint64_t successor = LowerBound(value + 1, found_successor);
+	std::optional<uint64_t> opt_successor;
+
+	if (found_successor)
+	{
+		opt_successor = successor;
+	}
+
+	ClearL1Cache(value, opt_successor);
+	ClearL2Cache(value, opt_successor);
+	return opt_successor;
+}
+
 bool MlpSet::Remove(uint64_t value)
 {
 	uint32_t ilen;
@@ -1206,31 +1319,12 @@ bool MlpSet::Remove(uint64_t value)
 		return false;
 	}
 
+	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
+
 	// Remove the node from the hash table
 	assert(m_hashTable.Remove(ilen, value));
 
-	bool found = false;
-	uint64_t successor = LowerBound(value + 1, found);
-
-	// handle L1 cache
-	if (!found || ((successor >> 54) != (value >> 54)))
-	{
-		// nullify the bit from the L1 cache
-		uint64_t h16bits = value >> 48;
-		m_treeDepth1[value >> 54] &= ~(uint64_t(1) << (h16bits % 64));
-	}
-
-	// handle L2 cache
-	if (!found || ((successor >> 46) != (value >> 46)))
-	{
-		// nullify the bit from the L2 cache
-		uint64_t h24bits = value >> 40;
-		m_treeDepth2[value >> 46] &= ~(uint64_t(1) << (h24bits % 64));
-	}
-	
-	if (!found)
-		return true;
-
+	bool remove_child = true;
 	for (ilen--; ilen > 2; ilen--)
 	{
 		// find the right position
@@ -1246,13 +1340,26 @@ bool MlpSet::Remove(uint64_t value)
 			continue;
 		}
 
-		if (value == m_hashTable.ht[pos].minKey)
+		if (value == m_hashTable.ht[pos].minKey && opt_successor.has_value())
 		{
-			m_hashTable.ht[pos].minKey = successor;
+			m_hashTable.ht[pos].minKey = *opt_successor;
+		}
+
+		if (remove_child)
+		{
+			auto children = m_hashTable.ht[pos].GetAllChildren(); // for debugging
+			m_hashTable.ht[pos].RemoveChild((value >> (64 - 8 * (ilen+1))) % 256);
+			remove_child = false;
+		}
+
+		if (m_hashTable.ht[pos].GetAllChildren().size() == 1)
+		{
+			m_hashTable.ht[pos].Clear();
+			remove_child = true;
 		}
 	}
 	
-	// TODO: handle path compression, remove children from intermittent nodes 
+	// TODO: handle path compression (?) Is there something to do here?
 
 	return true;
 }

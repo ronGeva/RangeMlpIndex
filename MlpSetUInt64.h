@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common.h"
-
+#include <optional>
 
 namespace MlpSetUInt64
 {
@@ -171,7 +171,7 @@ struct CuckooHashTableNode
 	
 	int FindNeighboringEmptySlot();
 	
-	void BitMapSet(int child);
+	void BitMapSet(int child, bool on=true);
 	
 	// TODO: free external bitmap memory when hash table is destroyed
 	//
@@ -412,6 +412,12 @@ public:
 
 private:
 	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found);
+
+	void ClearL1Cache(uint64_t value, std::optional<uint64_t> successor);
+
+	void ClearL2Cache(uint64_t value, std::optional<uint64_t> successor);
+
+	std::optional<uint64_t> ClearL1AndL2Caches(uint64_t value);
 	
 	// we mmap memory all at once, hold the pointer to the memory chunk
 	// TODO: this needs to changed after we support hash table resizing 
