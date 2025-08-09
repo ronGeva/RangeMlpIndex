@@ -549,28 +549,34 @@ void CuckooHashTableNode::RemoveChild(int child)
 	assert(IsNode() && !IsLeaf());
 	assert(0 <= child && child <= 255);
 	assert(ExistChild(child));
+
 	if (IsUsingInternalChildMap())
 	{
 		int k = GetChildNum();
-		if (likely(k < 8))
+		SetChildNum(k-1);
+		__m64 z = _mm_cvtsi64_m64(childMap);
+		__m64 cmpTarget = _mm_set1_pi8(child);
+		__m64 res = _mm_max_pu8(cmpTarget, z);
+		res = _mm_cmpeq_pi8(cmpTarget, res);
+		int msk = _mm_movemask_pi8(res);
+		msk &= (1<<k)-1;
+		msk++;
+		int pos = __builtin_ffs(msk);
+		assert(2 <= pos && pos <= k + 1);
+		uint64_t larger = (pos == 8) ? 0 : (childMap >> ((pos-1)*8) << ((pos-2)*8));
+		uint64_t smaller;
+		if (pos == 2)
 		{
-			SetChildNum(k+1);
-			__m64 z = _mm_cvtsi64_m64(childMap);
-			__m64 cmpTarget = _mm_set1_pi8(child);
-			__m64 res = _mm_max_pu8(cmpTarget, z);
-			res = _mm_cmpeq_pi8(cmpTarget, res);
-			int msk = _mm_movemask_pi8(res);
-			msk &= (1<<k)-1;
-			msk++;
-			int pos = __builtin_ffs(msk);
-			assert(1 <= pos && pos <= k + 1);
-			uint64_t larger = (pos == 8) ? 0 : (childMap >> ((pos-1)*8) << (pos*8));
-			uint64_t smaller = childMap & ((uint64_t(1) << ((pos-1)*8)) - 1);
-			childMap = smaller | larger;
-			childMap &= ~(uint64_t(child) << ((pos - 1)*8));
-			return; // TODO: this doesn't work, make it work
+			smaller = 0;
 		}
+		else
+		{
+			smaller = childMap & ((uint64_t(1) << ((pos-2)*8)) - 1);
+		}
+		childMap = smaller | larger;
+		return; // TODO: this doesn't work, make it work
 	}
+
 	BitMapSet(child, false);
 }
 
@@ -1325,6 +1331,7 @@ bool MlpSet::Remove(uint64_t value)
 	assert(m_hashTable.Remove(ilen, value));
 
 	bool remove_child = true;
+	uint8_t remove_child_offset = 8;
 	for (ilen--; ilen > 2; ilen--)
 	{
 		// find the right position
@@ -1348,7 +1355,7 @@ bool MlpSet::Remove(uint64_t value)
 		if (remove_child)
 		{
 			auto children = m_hashTable.ht[pos].GetAllChildren(); // for debugging
-			m_hashTable.ht[pos].RemoveChild((value >> (64 - 8 * (ilen+1))) % 256);
+			m_hashTable.ht[pos].RemoveChild(value >> (64 - 8 * remove_child_offset) % 256);
 			remove_child = false;
 		}
 
@@ -1356,6 +1363,7 @@ bool MlpSet::Remove(uint64_t value)
 		{
 			m_hashTable.ht[pos].Clear();
 			remove_child = true;
+			remove_child_offset = ilen; // TODO: verify, maybe it's ilen-1 or +1 idk
 		}
 	}
 	
