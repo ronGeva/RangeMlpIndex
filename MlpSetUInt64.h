@@ -2,6 +2,9 @@
 
 #include "common.h"
 #include <shared_mutex>
+#include <atomic>
+#include <boost/thread/shared_mutex.hpp>
+#include <boost/thread/locks.hpp>
 
 namespace MlpSetUInt64
 {
@@ -11,7 +14,17 @@ namespace MlpSetUInt64
 static uint32_t cur_generation;
 
 // Displacement can't be protected by generation.
-static std::shared_timed_mutex displacement_mutex;
+static std::shared_mutex displacement_mutex;
+
+class LockGuard {
+public:
+	LockGuard(std::shared_mutex *m, bool is_shared);
+	~LockGuard();
+
+private:
+	std::shared_mutex *m;
+	bool _is_shared;
+};
 
 // Cuckoo hash table node
 //
@@ -43,6 +56,13 @@ struct CuckooHashTableNode
 	// when it is a leaf, this is the opaque data pointer
 	// 
 	uint64_t childMap;
+
+	// Copy fields from another node in a way that works with std::atomic
+	void CopyWithoutGeneration(const CuckooHashTableNode& other) {
+		hash = other.hash;
+		minKey = other.minKey;
+		childMap = other.childMap;
+	}
 
 	
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)

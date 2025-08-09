@@ -23,7 +23,7 @@ else
 endif
 
 SRC_RELDIR = ../../
-FLAGS += -std=c++14 -march=native -isystem $(SRC_RELDIR)./gtest/include -pthread -g
+FLAGS += -std=c++17 -march=native -isystem $(SRC_RELDIR)./gtest/include -pthread -g
 FLAGS += $(EXTRA_FLAGS)
 
 INCLUDE_DIRS_FLAGS := $(addprefix -I$(SRC_RELDIR),$(INCLUDE_DIRS))
@@ -35,8 +35,10 @@ OBJS := $(SRCS:$(SRC_RELDIR)./%=%)
 OBJS := $(subst .cpp,.o,$(OBJS))
 OBJS := $(subst /,.,$(OBJS))
 
+BOOST_LIBS := -lboost_thread -lboost_system
+
 main: $(OBJS) libgtest.a
-	g++ $(FLAGS) $(OBJS) libgtest.a -o main
+	g++ $(FLAGS) $(OBJS) libgtest.a $(BOOST_LIBS) -o main
 
 generated.dependency: $(SRCS_AND_HEADERS) Makefile
 	rm -f ./generated.dependency

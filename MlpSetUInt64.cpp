@@ -1,8 +1,34 @@
 #include "MlpSetUInt64.h"
 #include <stdlib.h>
+#include <chrono>
+#include <iostream>
+#include <iomanip>
+#include <thread>
 
 namespace MlpSetUInt64
 {
+
+#include <mutex>
+static std::mutex debug_print_mutex;
+
+#define TRACE
+
+#ifndef TRACE
+#define DEBUG(msg)
+#else
+#define DEBUG(msg) do { \
+    	               auto n = std::chrono::system_clock::now(); \
+    	               auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(n.time_since_epoch()) % std::chrono::seconds(1); \
+    	               std::time_t t = std::chrono::system_clock::to_time_t(n); \
+    	               std::tm tm = *std::localtime(&t); \
+					   const char* file = std::strrchr(__FILE__, '/'); \
+					   file = file ? file + 1 : __FILE__; \				   
+					   std::lock_guard<std::mutex> lock(MlpSetUInt64::debug_print_mutex); \
+    	               std::cout << std::put_time(&tm, "%H:%M:%S.") << std::setw(9) << std::setfill('0') << ns.count() << " " \
+    	                         << "T" << std::this_thread::get_id() << ' ' << file << ':' << __LINE__ << ':' << __func__ \
+    	                         << " - " << msg << std::endl; \
+					} while(0)
+#endif
 
 // Vectorized XXHash utility
 // The hash function is a slightly modified XXH32, to fix a known deficiency 
@@ -22,6 +48,7 @@ static const uint32_t PRIME32_3 = 3266489917U;
 static const uint32_t PRIME32_4 = 668265263U;
 static const uint32_t PRIME32_5 = 374761393U;
 
+
 #define XXH_rotl32(x,r) ((x << r) | (x >> (32 - r)))
 
 uint32_t XXH32_avalanche(uint32_t h32)
@@ -33,6 +60,7 @@ uint32_t XXH32_avalanche(uint32_t h32)
     h32 ^= h32 >> 16;
     return h32;
 }
+
 
 uint32_t XXH32_CoreLogic(uint64_t key, uint32_t len, uint32_t seed, uint32_t multiplier)
 {
@@ -199,7 +227,33 @@ void XXHashArray(uint64_t key, __m128i& out1, __m128i& out2, __m128i& out3, __m1
 }
 
 }	// namespace XXH
-	
+
+LockGuard::LockGuard(std::shared_mutex *m, bool is_shared) : m(m), _is_shared(is_shared)
+{
+	if (is_shared)
+	{
+		m->lock_shared();
+	}
+	else
+	{
+		m->lock();
+	}
+	// DEBUG("LOCKED");
+}
+
+LockGuard::~LockGuard()
+{
+	// DEBUG("UNLOCKING");
+	if (_is_shared)
+	{
+		m->unlock_shared();
+	}
+	else
+	{
+		m->unlock();
+	}
+}
+
 void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen)
 {
 	assert(!IsOccupied());
@@ -602,8 +656,8 @@ uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 	
 void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target)
 {
-	*target = *this;
-	target->generation = cur_generation;
+    target->CopyWithoutGeneration(*this);
+    target->generation = cur_generation;
 	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
 	{
 		memset(this, 0, sizeof(CuckooHashTableNode));
@@ -770,9 +824,12 @@ uint32_t CuckooHashTable::ReservePositionForInsert(int ilen, uint64_t dkey, uint
 		return h2;
 	}
 	uint32_t victimPosition = rand()%2 ? h1 : h2;
-	displacement_mutex.lock();
-	HashTableCuckooDisplacement(victimPosition, 1, failed);
-	displacement_mutex.unlock();
+	{
+		// DEBUG("Locking");
+		LockGuard lock(&displacement_mutex, false);
+		// DEBUG("locked");
+		HashTableCuckooDisplacement(victimPosition, 1, failed);
+	}
 	if (failed)
 	{
 		return -1;
@@ -857,6 +914,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
 	while (true)
 	{
 		uint32_t generation = cur_generation;
+		LockGuard lock(&displacement_mutex, true);
 		int ret = QueryLCPInternal(key, idxLen, allPositions1, allPositions2, expectedHash, generation);
 		if (ret >= 0)
 		{
@@ -872,7 +930,6 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
                                             	    uint32_t* expectedHash,
 											  	    uint32_t generation)
 {
-	std::shared_lock<std::shared_timed_mutex> _lock_guard(displacement_mutex);
 	assert(m_hasCalledInit);
 	
 	__m128i h1, h2, h3, h4;
@@ -1202,6 +1259,7 @@ void MlpSet::Init(uint32_t maxSetSize)
 
 bool MlpSet::Insert(uint64_t value)
 {
+	// DEBUG("Insert start");
 	assert(m_hasCalledInit);
 	uint32_t cur_gen = cur_generation + 1;
 	int lcpLen;
@@ -1233,11 +1291,12 @@ bool MlpSet::Insert(uint64_t value)
 		uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
 
 		// Can be changed to UnsafeQueryLCP as we have a single writer.
-		lcpLen = m_hashTable.QueryLCP(value, 
-									  ilen /*out*/, 
-									  allPositions1 /*out*/, 
-									  allPositions2 /*out*/, 
-									  expectedHash /*out*/);
+		lcpLen = m_hashTable.QueryLCPInternal(value, 
+									  		  ilen /*out*/, 
+									  		  allPositions1 /*out*/, 
+									  		  allPositions2 /*out*/, 
+									  		  expectedHash /*out*/,
+									  		  UINT32_MAX /*generation*/);
 		if (lcpLen == 8)
 		{
 			return false;
@@ -1292,12 +1351,13 @@ bool MlpSet::Insert(uint64_t value)
 					assert(!exist && !failed);
 					assert(!m_hashTable.ht[x].IsOccupied());
 					// should be ok without fencing as we have a lock.
-					displacement_mutex.lock();
+					// DEBUG("Locking");
+					LockGuard lock(&displacement_mutex, false);
+					// DEBUG("locked");
 					m_hashTable.ht[pos].MoveNode(&(m_hashTable.ht[x]));
 					m_hashTable.ht[x].generation = cur_gen;
 					m_hashTable.ht[x].AlterIndexKeyLen(lcpLen + 1);
 					m_hashTable.ht[x].AlterHash18bit(newHash18bit);
-					displacement_mutex.unlock();
 				}
 				
 				// Re-construct ht[pos] (it has been cleared in MoveNode)
@@ -1318,7 +1378,6 @@ bool MlpSet::Insert(uint64_t value)
 											 cur_generation /*generation*/);
 					m_hashTable.ht[pos].AddChild((value >> (56 - 8 * lcpLen)) % 256);
 				}  
-
 #ifndef NDEBUG
 				// Sanity check newly added nodes
 				//
@@ -1461,11 +1520,12 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 	uint32_t allPositions[2][8];
 	uint64_t _expectedHash[4];
 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
-	int lcpLen = m_hashTable.QueryLCP(value,
-		                              ilen /*out*/,
-		                              allPositions[0] /*out*/,
-		                              allPositions[1] /*out*/,
-		                              expectedHash /*out*/);
+	int lcpLen = m_hashTable.QueryLCPInternal(value,
+		                              		  ilen /*out*/,
+		                              		  allPositions[0] /*out*/,
+		                              		  allPositions[1] /*out*/,
+		                              		  expectedHash /*out*/,
+		                              		  generation /*generation*/);
 	if (lcpLen == 8)
 	{
 		if (generation < m_hashTable.ht[allPositions[0][ilen - 1]].generation)
@@ -1645,8 +1705,9 @@ MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 
 uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 {
+	// DEBUG("LowerBound start");
 	do {
-		std::shared_lock<std::shared_timed_mutex> _lock_guard(displacement_mutex);
+		LockGuard lock(&displacement_mutex, true);
 		Promise p = LowerBoundInternal(value, found, cur_generation);
 		if (!found) {
 			return 0xffffffffffffffffULL;
@@ -1655,6 +1716,7 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 			p.Prefetch();
 			return p.Resolve();
 		}
+		// DEBUG("LowerBound failed");
 	} while (true);
 }
 
