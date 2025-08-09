@@ -200,13 +200,14 @@ void XXHashArray(uint64_t key, __m128i& out1, __m128i& out2, __m128i& out3, __m1
 
 }	// namespace XXH
 	
-void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild)
+void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen)
 {
 	assert(!IsOccupied());
 	assert(1 <= ilen && ilen <= 8 && 1 <= dlen && dlen <= 8 && -1 <= firstChild && firstChild <= 255);
 	hash = 0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit;
 	minKey = dkey;
 	childMap = firstChild;
+	generation = start_gen;
 }
 	
 int CuckooHashTableNode::FindNeighboringEmptySlot()
@@ -601,6 +602,7 @@ uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 	
 void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target)
 {
+	target->generation = cur_generation;
 	*target = *this;
 	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
 	{
@@ -768,7 +770,9 @@ uint32_t CuckooHashTable::ReservePositionForInsert(int ilen, uint64_t dkey, uint
 		return h2;
 	}
 	uint32_t victimPosition = rand()%2 ? h1 : h2;
+	displacement_mutex.lock();
 	HashTableCuckooDisplacement(victimPosition, 1, failed);
+	displacement_mutex.unlock();
 	if (failed)
 	{
 		return -1;
@@ -787,11 +791,12 @@ uint32_t CuckooHashTable::Insert(int ilen, int dlen, uint64_t dkey, int firstChi
 	uint32_t pos = ReservePositionForInsert(ilen, dkey, hash18bit, exist, failed);
 	if (!exist && !failed)
 	{
-		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild);
+		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild, cur_generation);
 	}
 	return pos;
 }
 
+// UNPROTECTED, seems to only be used internally and in insert. Could be protected easily with gen + lock.
 uint32_t CuckooHashTable::Lookup(int ilen, uint64_t ikey, bool& found)
 {
 	assert(m_hasCalledInit);
@@ -849,6 +854,25 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
                                             uint32_t* allPositions2, 
                                             uint32_t* expectedHash)
 {
+	while (true)
+	{
+		uint32_t generation = cur_generation;
+		int ret = QueryLCPInternal(key, idxLen, allPositions1, allPositions2, expectedHash, generation);
+		if (ret >= 0)
+		{
+			return ret;
+		}
+	}
+}
+
+int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key, 
+                                            	    uint32_t& idxLen, 
+                                            	    uint32_t* allPositions1, 
+                                            	    uint32_t* allPositions2, 
+                                            	    uint32_t* expectedHash,
+											  	    uint32_t generation)
+{
+	std::shared_lock<std::shared_timed_mutex> _lock_guard(displacement_mutex);
 	assert(m_hasCalledInit);
 	
 	__m128i h1, h2, h3, h4;
@@ -889,10 +913,18 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
 	{
 		if ((ht[allPositions1[len]].hash & 0xf803ffffU) == expectedHash[len]) 
 		{
+			if (ht[allPositions1[len]].generation > generation)
+			{
+				return -1;
+			}
 			break;
 		}
 		if ((ht[allPositions2[len]].hash & 0xf803ffffU) == expectedHash[len])
 		{
+			if (ht[allPositions2[len]].generation > generation)
+			{
+				return -1;
+			}
 			allPositions1[len] = allPositions2[len];
 			break;
 		}
@@ -927,6 +959,10 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
 #endif
 	{
 		uint64_t xorValue = key ^ ht[allPositions1[len]].minKey;
+		if (ht[allPositions1[len]].generation > generation)
+		{
+			return -1;
+		}
 		if (!xorValue) return 8;
 			
 		int z = __builtin_clzll(xorValue);
@@ -963,6 +999,10 @@ _slowpath_end:
 		stats.m_lcpResultHistogram[idxLen]++;
 #endif
 		uint64_t xorValue = key ^ ht[allPositions1[idxLen-1]].minKey;
+		if (ht[allPositions1[idxLen-1]].generation > generation)
+		{
+			return -1;
+		}
 		if (!xorValue) return 8;
 			
 		int z = __builtin_clzll(xorValue);
@@ -1149,20 +1189,21 @@ void MlpSet::Init(uint32_t maxSetSize)
 	memset(m_memoryPtr, 0, m_allocatedSize);
 }
 
-bool MlpSet::Remove(uint64_t value)
-{
-	int lcpLen = m_hashTable.QueryLCP(value, 
-		ilen /*out*/, 
-		allPositions1 /*out*/, 
-		allPositions2 /*out*/, 
-		expectedHash /*out*/);
+// bool MlpSet::Remove(uint64_t value)
+// {
+// 	int lcpLen = m_hashTable.QueryLCP(value, 
+// 		ilen /*out*/, 
+// 		allPositions1 /*out*/, 
+// 		allPositions2 /*out*/, 
+// 		expectedHash /*out*/);
 
-	return true;
-}
+// 	return true;
+// }
 
 bool MlpSet::Insert(uint64_t value)
 {
 	assert(m_hasCalledInit);
+	uint32_t cur_gen = ++cur_generation;
 	int lcpLen;
 	// Handle LCP < 2 case first
 	// This is supposed to be a L1 hit (working set 8KB)
@@ -1190,11 +1231,13 @@ bool MlpSet::Insert(uint64_t value)
 		uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
 		uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
 		uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
+
+		// Can be changed to UnsafeQueryLCP as we have a single writer.
 		lcpLen = m_hashTable.QueryLCP(value, 
-		                              ilen /*out*/, 
-		                              allPositions1 /*out*/, 
-		                              allPositions2 /*out*/, 
-		                              expectedHash /*out*/);
+									  ilen /*out*/, 
+									  allPositions1 /*out*/, 
+									  allPositions2 /*out*/, 
+									  expectedHash /*out*/);
 		if (lcpLen == 8)
 		{
 			return false;
@@ -1215,6 +1258,7 @@ bool MlpSet::Insert(uint64_t value)
 				if (value < m_hashTable.ht[pos].minKey)
 				{
 					minKeyUpdated = true;
+					m_hashTable.ht[pos].generation = cur_gen;
 					m_hashTable.ht[pos].minKey = value;
 				}
 			}
@@ -1247,9 +1291,12 @@ bool MlpSet::Insert(uint64_t value)
 						                                              failed /*out*/);
 					assert(!exist && !failed);
 					assert(!m_hashTable.ht[x].IsOccupied());
+					displacement_mutex.lock();
 					m_hashTable.ht[pos].MoveNode(&(m_hashTable.ht[x]));
+					m_hashTable.ht[x].generation = cur_gen;
 					m_hashTable.ht[x].AlterIndexKeyLen(lcpLen + 1);
 					m_hashTable.ht[x].AlterHash18bit(newHash18bit);
+					displacement_mutex.unlock();
 				}
 				
 				// Re-construct ht[pos] (it has been cleared in MoveNode)
@@ -1266,7 +1313,8 @@ bool MlpSet::Insert(uint64_t value)
 						                     lcpLen /*fullKeyLen*/,
 						                     z /*minKey*/,
 						                     oldHash18bit /*hash18bit*/,
-						                     (minKey >> (56 - 8 * lcpLen)) % 256 /*firstChild*/);
+						                     (minKey >> (56 - 8 * lcpLen)) % 256, /*firstChild*/
+											 cur_generation /*generation*/);
 					m_hashTable.ht[pos].AddChild((value >> (56 - 8 * lcpLen)) % 256);
 				}  
 
@@ -1320,6 +1368,7 @@ bool MlpSet::Insert(uint64_t value)
 						assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 						if (value < m_hashTable.ht[pos].minKey)
 						{
+							m_hashTable.ht[pos].generation = cur_gen;
 							m_hashTable.ht[pos].minKey = value;
 						}
 						else
@@ -1335,6 +1384,7 @@ bool MlpSet::Insert(uint64_t value)
 							assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 							if (value < m_hashTable.ht[pos].minKey)
 							{
+								m_hashTable.ht[pos].generation = cur_gen;
 								m_hashTable.ht[pos].minKey = value;
 							}
 							else
@@ -1388,7 +1438,7 @@ bool MlpSet::Exist(uint64_t value)
 	return (lcpLen == 8);
 }
 
-MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found)
+MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t generation, bool &retry)
 {
 	assert(m_hasCalledInit);
 	found = true;
@@ -1409,13 +1459,18 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found)
 	uint32_t allPositions[2][8];
 	uint64_t _expectedHash[4];
 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
-	int lcpLen = m_hashTable.QueryLCP(value, 
-		                              ilen /*out*/, 
-		                              allPositions[0] /*out*/, 
-		                              allPositions[1] /*out*/, 
+	int lcpLen = m_hashTable.QueryLCP(value,
+		                              ilen /*out*/,
+		                              allPositions[0] /*out*/,
+		                              allPositions[1] /*out*/,
 		                              expectedHash /*out*/);
 	if (lcpLen == 8)
 	{
+		if (generation < m_hashTable.ht[allPositions[0][ilen - 1]].generation)
+		{
+			retry = true;
+			return empty_promise;
+		}
 		return Promise(&m_hashTable.ht[allPositions[0][ilen - 1]]);
 	}
 	if (lcpLen == 2)
@@ -1434,6 +1489,11 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found)
 			//
 			uint32_t child = (value >> (56 - dlen * 8)) & 255;
 			int lbChild = m_hashTable.ht[pos].LowerBoundChild(child);
+			if (generation < m_hashTable.ht[pos].generation)
+			{
+				retry = true;
+				return empty_promise;
+			}
 			if (lbChild == -1) 
 			{
 				goto _parent;
@@ -1443,6 +1503,7 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found)
 			//
 			uint64_t keyToFind = value & (~(255ULL << (56 - dlen * 8)));
 			keyToFind |= uint64_t(lbChild) << (56 - dlen * 8);
+			// From here there's no need to check generation as we know the key is in the tree because were locked.
 			return m_hashTable.GetLookupMustExistPromise(dlen + 1, keyToFind);
 		}
 		else
@@ -1452,6 +1513,11 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found)
 			//
 			if (value < m_hashTable.ht[pos].minKey)
 			{
+				if (generation < m_hashTable.ht[pos].generation)
+				{
+					retry = true;
+					return empty_promise;
+				}
 				// smaller than whole subtree, result is just subtreeMin
 				//
 				return Promise(&m_hashTable.ht[pos]);
@@ -1488,6 +1554,11 @@ _parent:
 					if (child < 255)
 					{
 						int lbChild = m_hashTable.ht[pos].LowerBoundChild(child + 1);
+						if (generation < m_hashTable.ht[pos].generation)
+						{
+							retry = true;
+							return empty_promise;
+						}	
 						if (lbChild != -1) 
 						{
 							assert(lbChild != child);
@@ -1559,13 +1630,15 @@ _flat_mapping:
 	// not found
 	//
 	found = false;
-	return Promise();
+	return empty_promise;
 }
 
+// This version wasn't safe beforehand as well, so it doesn't need to change.
 MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 {
 	bool found;
-	Promise p = LowerBoundInternal(value, found);
+	bool unused_retry;
+	Promise p = LowerBoundInternal(value, found, UINT32_MAX, unused_retry);
 	if (found) 
 	{
 		p.Prefetch();
@@ -1575,16 +1648,18 @@ MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 
 uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 {
-	Promise p = LowerBoundInternal(value, found);
-	if (found) 
-	{
-		p.Prefetch();
-		return p.Resolve();
-	}
-	else
-	{
-		return 0xffffffffffffffffULL;
-	}
+	bool retry = false;
+	do {
+		std::shared_lock<std::shared_timed_mutex> _lock_guard(displacement_mutex);
+		Promise p = LowerBoundInternal(value, found, cur_generation, retry);
+		if (!found) {
+			return 0xffffffffffffffffULL;
+		}
+		if (p.IsValid()) {
+			p.Prefetch();
+			return p.Resolve();
+		}
+	} while (retry);
 }
 
 }	// namespace MlpSetUInt64

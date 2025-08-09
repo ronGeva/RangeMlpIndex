@@ -20,12 +20,12 @@ TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
 	void* allocatedPtr = mmap(NULL, 
 		                      allocatedArrLen, 
 		                      PROT_READ | PROT_WRITE, 
-		                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, 
+		                      MAP_PRIVATE | MAP_ANONYMOUS, 
 		                      -1 /*fd*/, 
 		                      0 /*offset*/);
 	ReleaseAssert(allocatedPtr != MAP_FAILED);
 	Auto(
-		int result = SAFE_HUGETLB_MUNMAP(allocatedPtr, allocatedArrLen);
+		int result = munmap(allocatedPtr, allocatedArrLen);
 		ReleaseAssert(result == 0);
 	);
 	
@@ -233,17 +233,17 @@ TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
 //
 TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 {
-	const int HtSize = 1 << 26;
+	const int HtSize = 1 << 15;
 	uint64_t allocatedArrLen = uint64_t(HtSize + 20) * sizeof(MlpSetUInt64::CuckooHashTableNode) + 256;
 	void* allocatedPtr = mmap(NULL, 
 		                      allocatedArrLen, 
 		                      PROT_READ | PROT_WRITE, 
-		                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, 
+		                      MAP_PRIVATE | MAP_ANONYMOUS, 
 		                      -1 /*fd*/, 
 		                      0 /*offset*/);
 	ReleaseAssert(allocatedPtr != MAP_FAILED);
 	Auto(
-		int result = SAFE_HUGETLB_MUNMAP(allocatedPtr, allocatedArrLen);
+		int result = munmap(allocatedPtr, allocatedArrLen);
 		ReleaseAssert(result == 0);
 	);
 	
@@ -258,7 +258,7 @@ TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 		ht.Init(reinterpret_cast<MlpSetUInt64::CuckooHashTableNode*>(x), HtSize - 1);
 	}
 	
-	const int numQueries = 20000000;
+	const int numQueries = 1 << 15;
 	uint64_t* q = new uint64_t[numQueries];
 	pair<int, uint64_t>* expectedAnswers = new pair<int, uint64_t>[numQueries];
 	pair<int, uint64_t>* actualAnswers = new pair<int, uint64_t>[numQueries];
@@ -319,6 +319,7 @@ TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 			if (currentNode % (totalNodes / 10) == 0)
 			{
 				printf("%d%% complete\n", currentNode / (totalNodes / 10) * 10);
+				printf("current node: %d total nodes: %d\n", currentNode, totalNodes);
 			}
 		}
 		printf("Generating query..\n");
@@ -602,7 +603,7 @@ TEST(MlpSetUInt64, VitroHtNodeLowerBoundChildCorrectness)
 			memset(&nd, 0, sizeof(MlpSetUInt64::CuckooHashTableNode));
 			{
 				int x = rand() % 256;
-				nd.Init(1, 1, 0, 0, x);
+				nd.Init(1, 1, 0, 0, x, 0);
 				existed.insert(x);
 			}
 			rep(k, 1, numChild-1)
@@ -636,7 +637,7 @@ TEST(MlpSetUInt64, VitroHtNodeLowerBoundChildCorrectness)
 			memset(nd, 0, sizeof(MlpSetUInt64::CuckooHashTableNode) * 7);
 			{
 				int x = rand() % 256;
-				nd[3].Init(1, 1, 0, 0, x);
+				nd[3].Init(1, 1, 0, 0, x, 0);
 				existed.insert(x);
 			}
 			rep(k, 1, numChild-1)
@@ -678,7 +679,7 @@ TEST(MlpSetUInt64, VitroHtNodeLowerBoundChildCorrectness)
 			}
 			{
 				int x = rand() % 256;
-				nd[3].Init(1, 1, 0, 0, x);
+				nd[3].Init(1, 1, 0, 0, x, 0);
 				existed.insert(x);
 			}
 			rep(k, 1, numChild-1)

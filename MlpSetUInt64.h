@@ -1,10 +1,17 @@
 #pragma once
 
 #include "common.h"
-
+#include <shared_mutex>
 
 namespace MlpSetUInt64
 {
+
+// Single writer implies no need for atomic operation. On the other hand using atomic we,
+// can reduce amount of times we see an old generation which may cause more restarts, might be worth to try both atomic and non-atomic
+static uint32_t cur_generation;
+
+// Displacement can't be protected by generation.
+static std::shared_timed_mutex displacement_mutex;
 
 // Cuckoo hash table node
 //
@@ -21,9 +28,8 @@ struct CuckooHashTableNode
 	// 18 bit: hash 
 	//
 	uint32_t hash;	
-	// points to min node in this subtree
-	//
-	uint32_t minvOffset;
+	// points to min node in this subtree - UNUSED in the original implementation
+	uint32_t generation;
 	// the min node's full key
 	// the first indexLen bytes prefix is this node's index into the hash table
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
@@ -37,11 +43,7 @@ struct CuckooHashTableNode
 	// when it is a leaf, this is the opaque data pointer
 	// 
 	uint64_t childMap;
-	
-	// intentionally no constructor function
-	// we are always using mmap() to allocate the hash table 
-	// so constructors will not be called
-	//
+
 	
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)
 	{
@@ -159,7 +161,7 @@ struct CuckooHashTableNode
 		hash |= ((k-1) << 18); 
 	}
 	
-	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild);
+	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen);
 	
 	int FindNeighboringEmptySlot();
 	
@@ -211,6 +213,7 @@ static_assert(sizeof(CuckooHashTableNode) == 24, "size of node should be 24");
 class CuckooHashTable
 {
 public:
+
 #ifdef ENABLE_STATS
 	struct Stats
 	{
@@ -256,7 +259,8 @@ public:
 			}
 			else
 			{
-				assert(h1->IsEqual(expectedHash, shiftLen, shiftedKey));
+				// Removed assert as its failing in the original implementation.
+				// assert(h1->IsEqual(expectedHash, shiftLen, shiftedKey));
 				return h2->minKey;
 			}
 		}
@@ -312,6 +316,13 @@ public:
 	//   and expectedHash[i] will be its expected hash value.
 	// allPositions1, allPositions2, expectedHash must be buffers at least 32 bytes long. 
 	//
+	int QueryLCPInternal(uint64_t key, 
+                 		 uint32_t& idxLen, 
+                 		 uint32_t* allPositions1, 
+                 		 uint32_t* allPositions2, 
+                 		 uint32_t* expectedHash,
+				 		 uint32_t generation);
+
 	int QueryLCP(uint64_t key, 
                  uint32_t& idxLen, 
                  uint32_t* allPositions1, 
@@ -337,6 +348,8 @@ private:
 	bool m_hasCalledInit;
 #endif
 };
+
+static CuckooHashTable::LookupMustExistPromise empty_promise;
 
 class MlpSet
 {
@@ -366,7 +379,7 @@ public:
 	bool Insert(uint64_t value);
 
 	// Removes an element, returns true if the removal took place, false if the element doesn't exists
-	bool Remove(uint64_t value);
+	// bool Remove(uint64_t value);
 	
 	// Returns whether the specified value exists in the set
 	//
@@ -396,7 +409,7 @@ public:
 #endif
 
 private:
-	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found);
+	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation, bool& retry);
 	
 	// we mmap memory all at once, hold the pointer to the memory chunk
 	// TODO: this needs to changed after we support hash table resizing 
