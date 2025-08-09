@@ -4,31 +4,28 @@ int main()
 {
     MlpSetUInt64::MlpSet s;
     s.Init(4194304);
-    s.Insert(1);
-    s.Insert(2);
-    if (s.Exist(1))
+
+    for (uint64_t i = 0; i < 199; i++)
     {
-        printf("1 exists\n");
-    }
-    else
-    {
-        printf("1 does not exist\n");
+        s.Insert(i);
     }
 
-    s.Exist(2);
-    if (s.Exist(2))
+    // generate a "random" order of values to remove
+    std::vector<uint64_t> values;
+    for (size_t x = 0; x < 199; x++)
     {
-        printf("2 exists\n");
-    }
-    else
-    {
-        printf("2 does not exist\n");
+        uint64_t value = (3 * x + 1) % 199;
+        values.push_back(value);
     }
 
-    printf("removing 1\n");
-    s.Remove(1);
-    s.Exist(1);
-
-    //printf("ptr=%x, errno=%d\n", ptr, errno);
+    for (uint64_t i: values)
+    {
+        s.Remove(i);
+        if (s.Exist(i))
+        {
+            std::cout << "Error: " << i << " should not exist" << std::endl;
+        }
+    }
+    
     return 0;
 }

@@ -23,7 +23,8 @@ struct CuckooHashTableNode
 	uint32_t hash;	
 	// points to min node in this subtree
 	//
-	uint32_t minvOffset;
+	uint32_t childrenCount: 8;
+	uint32_t reserved: 24;
 	// the min node's full key
 	// the first indexLen bytes prefix is this node's index into the hash table
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
@@ -46,7 +47,8 @@ struct CuckooHashTableNode
 	void Clear()
 	{
 		hash = 0;
-		minvOffset = 0;
+		childrenCount = 0;
+		reserved = 0;
 		minKey = 0;
 		childMap = 0;
 	}
@@ -155,16 +157,23 @@ struct CuckooHashTableNode
 	
 	int GetChildNum()
 	{
-		assert(IsUsingInternalChildMap());
-		return 1 + ((hash >> 18) & 7);
+		if (childrenCount <= 8)
+		{
+			return 1 + ((hash >> 18) & 7);
+		}
+
+		return childrenCount;
 	}
 	
 	void SetChildNum(int k)
 	{
-		assert(IsUsingInternalChildMap());
-		assert(1 <= k && k <= 8);
-		hash &= 0xffe3ffffU;
-		hash |= ((k-1) << 18); 
+		if (k <= 8)
+		{
+			hash &= 0xffe3ffffU;
+			hash |= ((k-1) << 18);
+		}
+
+		childrenCount = k;
 	}
 	
 	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild);
@@ -193,6 +202,8 @@ struct CuckooHashTableNode
 	// Add a new child, must not exist
 	//
 	void AddChild(int child);
+
+	void RevertToInternalBitmap();
 
 	// Remove a child, must exist
 	void RemoveChild(int child);

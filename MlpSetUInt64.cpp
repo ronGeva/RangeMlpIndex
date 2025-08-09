@@ -508,9 +508,9 @@ void CuckooHashTableNode::AddChild(int child)
 	assert(IsNode() && !IsLeaf());
 	assert(0 <= child && child <= 255);
 	assert(!ExistChild(child));
+	uint8_t k = GetChildNum();
 	if (IsUsingInternalChildMap())
 	{
-		int k = GetChildNum();
 		if (likely(k < 8))
 		{
 			SetChildNum(k+1);
@@ -542,6 +542,64 @@ void CuckooHashTableNode::AddChild(int child)
 		ExtendToBitMap();
 	}
 	BitMapSet(child);
+	SetChildNum(k+1);
+}
+
+void CuckooHashTableNode::RevertToInternalBitmap()
+{
+	assert(!IsUsingInternalChildMap());
+
+	uint64_t tmpChildMap = 0;
+
+	if (unlikely(IsExternalPointerBitMap()))
+	{
+		for (int i = 255; i >= 0; i--)
+		{
+			if (reinterpret_cast<uint8_t*>(childMap)[i / 8] & (1 << (i % 8)))
+			{
+				tmpChildMap <<= 8;
+				tmpChildMap |= i;
+			}
+		}
+		childMap = tmpChildMap;
+		return;
+	}
+
+	for (int i = 255; i > 64; i--)
+	{
+		if (i == 94 || i == 95)
+		{
+			uint64_t mask = 1LL << (i - 76);
+			if (hash & mask)
+			{
+				tmpChildMap <<= 8;
+				tmpChildMap |= i;
+			}
+			continue;
+		}
+
+		int offset = ((hash >> 21) & 7) - 4;
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
+		ptr = &ptr[i / 64 - 1];
+		if (*ptr & (uint64_t(1) << (i % 64)))
+		{
+			tmpChildMap <<= 8;
+			tmpChildMap |= i;
+		}
+	}
+
+	for (int i = 64; i >= 0; i--)
+	{
+		if (childMap & (uint64_t(1) << i))
+		{
+			tmpChildMap <<= 8;
+			tmpChildMap |= i;
+		}
+	}
+	
+	childMap = tmpChildMap;
+
+	hash &= ~(7 << 21); // mark the node as using internal child map
 }
 
 void CuckooHashTableNode::RemoveChild(int child)
@@ -550,19 +608,19 @@ void CuckooHashTableNode::RemoveChild(int child)
 	assert(0 <= child && child <= 255);
 	assert(ExistChild(child));
 
+	int amountOfChildren = GetChildNum();
 	if (IsUsingInternalChildMap())
 	{
-		int k = GetChildNum();
-		SetChildNum(k-1);
+		SetChildNum(amountOfChildren-1);
 		__m64 z = _mm_cvtsi64_m64(childMap);
 		__m64 cmpTarget = _mm_set1_pi8(child);
 		__m64 res = _mm_max_pu8(cmpTarget, z);
 		res = _mm_cmpeq_pi8(cmpTarget, res);
 		int msk = _mm_movemask_pi8(res);
-		msk &= (1<<k)-1;
+		msk &= (1<<amountOfChildren)-1;
 		msk++;
 		int pos = __builtin_ffs(msk);
-		assert(2 <= pos && pos <= k + 1);
+		assert(2 <= pos && pos <= amountOfChildren + 1);
 		uint64_t larger = (pos == 8) ? 0 : (childMap >> ((pos-1)*8) << ((pos-2)*8));
 		uint64_t smaller;
 		if (pos == 2)
@@ -578,6 +636,15 @@ void CuckooHashTableNode::RemoveChild(int child)
 	}
 
 	BitMapSet(child, false);
+
+	if (amountOfChildren == 9)
+	{
+		// we are using external bitmap, so we need to convert it to internal map
+		// before removing the child
+		RevertToInternalBitmap();
+	}
+
+	SetChildNum(amountOfChildren - 1);
 }
 
 vector<int> CuckooHashTableNode::GetAllChildren()
@@ -1354,16 +1421,15 @@ bool MlpSet::Remove(uint64_t value)
 
 		if (remove_child)
 		{
-			auto children = m_hashTable.ht[pos].GetAllChildren(); // for debugging
 			m_hashTable.ht[pos].RemoveChild(value >> (64 - 8 * remove_child_offset) % 256);
 			remove_child = false;
 		}
 
-		if (m_hashTable.ht[pos].GetAllChildren().size() == 1)
+		if (m_hashTable.ht[pos].GetChildNum() == 1)
 		{
 			m_hashTable.ht[pos].Clear();
 			remove_child = true;
-			remove_child_offset = ilen; // TODO: verify, maybe it's ilen-1 or +1 idk
+			remove_child_offset = ilen;
 		}
 	}
 	
