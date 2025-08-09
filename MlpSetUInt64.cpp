@@ -602,8 +602,8 @@ uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 	
 void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target)
 {
-	target->generation = cur_generation;
 	*target = *this;
+	target->generation = cur_generation;
 	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
 	{
 		memset(this, 0, sizeof(CuckooHashTableNode));
@@ -1203,7 +1203,7 @@ void MlpSet::Init(uint32_t maxSetSize)
 bool MlpSet::Insert(uint64_t value)
 {
 	assert(m_hasCalledInit);
-	uint32_t cur_gen = ++cur_generation;
+	uint32_t cur_gen = cur_generation + 1;
 	int lcpLen;
 	// Handle LCP < 2 case first
 	// This is supposed to be a L1 hit (working set 8KB)
@@ -1254,11 +1254,11 @@ bool MlpSet::Insert(uint64_t value)
 			{
 				// path-compression string matched, no need to split
 				//
+				m_hashTable.ht[pos].generation = cur_gen;
 				m_hashTable.ht[pos].AddChild((value >> (56 - lcpLen * 8)) % 256);
 				if (value < m_hashTable.ht[pos].minKey)
 				{
 					minKeyUpdated = true;
-					m_hashTable.ht[pos].generation = cur_gen;
 					m_hashTable.ht[pos].minKey = value;
 				}
 			}
@@ -1291,6 +1291,7 @@ bool MlpSet::Insert(uint64_t value)
 						                                              failed /*out*/);
 					assert(!exist && !failed);
 					assert(!m_hashTable.ht[x].IsOccupied());
+					// should be ok without fencing as we have a lock.
 					displacement_mutex.lock();
 					m_hashTable.ht[pos].MoveNode(&(m_hashTable.ht[x]));
 					m_hashTable.ht[x].generation = cur_gen;
@@ -1411,6 +1412,7 @@ _end:
 		                   failed /*out*/);
 		assert(!exist && !failed);
 	}
+	cur_generation = cur_gen;
 	
 	// Finally, if lcp == 2, we need to set the corresponding m_treeDepth2 bit
 	//
@@ -1418,7 +1420,7 @@ _end:
 	{
 		assert((m_treeDepth2[(value >> 40) / 64] & (uint64_t(1) << ((value >> 40) % 64))) == 0);
 		m_treeDepth2[(value >> 40) / 64] |= uint64_t(1) << ((value >> 40) % 64);
-	}	
+	}
 	return true;
 }
 
@@ -1438,7 +1440,7 @@ bool MlpSet::Exist(uint64_t value)
 	return (lcpLen == 8);
 }
 
-MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t generation, bool &retry)
+MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t generation)
 {
 	assert(m_hasCalledInit);
 	found = true;
@@ -1468,7 +1470,6 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 	{
 		if (generation < m_hashTable.ht[allPositions[0][ilen - 1]].generation)
 		{
-			retry = true;
 			return empty_promise;
 		}
 		return Promise(&m_hashTable.ht[allPositions[0][ilen - 1]]);
@@ -1491,7 +1492,6 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			int lbChild = m_hashTable.ht[pos].LowerBoundChild(child);
 			if (generation < m_hashTable.ht[pos].generation)
 			{
-				retry = true;
 				return empty_promise;
 			}
 			if (lbChild == -1) 
@@ -1515,7 +1515,6 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			{
 				if (generation < m_hashTable.ht[pos].generation)
 				{
-					retry = true;
 					return empty_promise;
 				}
 				// smaller than whole subtree, result is just subtreeMin
@@ -1556,7 +1555,6 @@ _parent:
 						int lbChild = m_hashTable.ht[pos].LowerBoundChild(child + 1);
 						if (generation < m_hashTable.ht[pos].generation)
 						{
-							retry = true;
 							return empty_promise;
 						}	
 						if (lbChild != -1) 
@@ -1637,8 +1635,7 @@ _flat_mapping:
 MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 {
 	bool found;
-	bool unused_retry;
-	Promise p = LowerBoundInternal(value, found, UINT32_MAX, unused_retry);
+	Promise p = LowerBoundInternal(value, found, UINT32_MAX);
 	if (found) 
 	{
 		p.Prefetch();
@@ -1648,10 +1645,9 @@ MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 
 uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 {
-	bool retry = false;
 	do {
 		std::shared_lock<std::shared_timed_mutex> _lock_guard(displacement_mutex);
-		Promise p = LowerBoundInternal(value, found, cur_generation, retry);
+		Promise p = LowerBoundInternal(value, found, cur_generation);
 		if (!found) {
 			return 0xffffffffffffffffULL;
 		}
@@ -1659,7 +1655,7 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 			p.Prefetch();
 			return p.Resolve();
 		}
-	} while (retry);
+	} while (true);
 }
 
 }	// namespace MlpSetUInt64

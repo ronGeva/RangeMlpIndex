@@ -29,7 +29,7 @@ struct CuckooHashTableNode
 	//
 	uint32_t hash;	
 	// points to min node in this subtree - UNUSED in the original implementation
-	uint32_t generation;
+	std::atomic<uint32_t> generation;
 	// the min node's full key
 	// the first indexLen bytes prefix is this node's index into the hash table
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
@@ -409,7 +409,7 @@ public:
 #endif
 
 private:
-	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation, bool& retry);
+	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation);
 	
 	// we mmap memory all at once, hold the pointer to the memory chunk
 	// TODO: this needs to changed after we support hash table resizing 
