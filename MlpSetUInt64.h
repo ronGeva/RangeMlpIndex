@@ -201,7 +201,7 @@ struct CuckooHashTableNode
 	
 	// Switch from internal child list to internal/external bitmap
 	//
-	void ExtendToBitMap();
+	void ExtendToBitMap(uint32_t generation);
 	
 	// Find minimum child >= given child
 	// returns -1 if larger child does not exist
@@ -214,7 +214,7 @@ struct CuckooHashTableNode
 	
 	// Add a new child, must not exist
 	//
-	void AddChild(int child);
+	void AddChild(int child, uint32_t generation);
 
 	// for debug only, get list of all children in sorted order
 	//
@@ -383,7 +383,7 @@ private:
 #endif
 };
 
-static CuckooHashTable::LookupMustExistPromise empty_promise;
+// Removed global empty_promise to fix race condition - now use local construction
 
 class MlpSet
 {

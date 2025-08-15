@@ -92,6 +92,7 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
                 bool existed = ms.Exist(key);
                 if (!existed) {
                     printf("Reader %d found key %llu not existed %llu\n", t, (unsigned long long)key, (unsigned long long)c);
+                    
                 }
                 ReleaseAssert(existed);
 

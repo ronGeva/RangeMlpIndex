@@ -140,7 +140,7 @@ TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
 		ReleaseAssert(ht.ht[pos].GetFullKey() == row->minv);
 		rep(i, 1, childCount - 1)
 		{
-			ht.ht[pos].AddChild(row->children[i]);
+			ht.ht[pos].AddChild(row->children[i], 0);
 		}
 		if (childCount > 0)
 		{
@@ -615,7 +615,7 @@ TEST(MlpSetUInt64, VitroHtNodeLowerBoundChildCorrectness)
 					if (!existed.count(x)) break;
 				}
 				existed.insert(x);
-				nd.AddChild(x);
+				nd.AddChild(x, 0);
 			}
 			ReleaseAssert(nd.IsUsingInternalChildMap());
 			rep(i, 0, 255)
@@ -649,7 +649,7 @@ TEST(MlpSetUInt64, VitroHtNodeLowerBoundChildCorrectness)
 					if (!existed.count(x)) break;
 				}
 				existed.insert(x);
-				nd[3].AddChild(x);
+				nd[3].AddChild(x, 0);
 			}
 			ReleaseAssert(!nd[3].IsUsingInternalChildMap() && !nd[3].IsExternalPointerBitMap());
 			rep(i, 0, 255)
@@ -691,7 +691,7 @@ TEST(MlpSetUInt64, VitroHtNodeLowerBoundChildCorrectness)
 					if (!existed.count(x)) break;
 				}
 				existed.insert(x);
-				nd[3].AddChild(x);
+				nd[3].AddChild(x, 0);
 			}
 			ReleaseAssert(!nd[3].IsUsingInternalChildMap() && nd[3].IsExternalPointerBitMap());
 			rep(i, 0, 255)
