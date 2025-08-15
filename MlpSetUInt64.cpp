@@ -1425,7 +1425,7 @@ bool MlpSet::Remove(uint64_t value)
 
 		if (remove_child)
 		{
-			m_hashTable.ht[pos].RemoveChild(value >> (64 - 8 * remove_child_offset) % 256);
+			m_hashTable.ht[pos].RemoveChild((value >> (64 - 8 * remove_child_offset)) % 256);
 			remove_child = false;
 		}
 
