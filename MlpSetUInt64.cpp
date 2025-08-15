@@ -1395,7 +1395,8 @@ bool MlpSet::Remove(uint64_t value)
 	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
 
 	// Remove the node from the hash table
-	assert(m_hashTable.Remove(ilen, value));
+	bool res = m_hashTable.Remove(ilen, value);
+	assert(res);
 
 	bool remove_child = true;
 	uint8_t remove_child_offset = 8;
@@ -1414,6 +1415,9 @@ bool MlpSet::Remove(uint64_t value)
 			continue;
 		}
 
+		// If the successor isn't in the the subtree of the current node,
+		// that means the current node has no children, and will be deleted
+		// anyway
 		if (value == m_hashTable.ht[pos].minKey && opt_successor.has_value())
 		{
 			m_hashTable.ht[pos].minKey = *opt_successor;
@@ -1432,8 +1436,6 @@ bool MlpSet::Remove(uint64_t value)
 			remove_child_offset = ilen;
 		}
 	}
-	
-	// TODO: handle path compression (?) Is there something to do here?
 
 	return true;
 }
