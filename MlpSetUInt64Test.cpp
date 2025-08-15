@@ -1167,6 +1167,23 @@ TEST(MlpSetUInt64, WorkloadD_80M_Dep)
 	printf("Finished %d queries\n", int(workload.numOperations));
 }
 
+// Simple test to verify basic functionality: insert 0 and check if it exists
+TEST(MlpSetUInt64, BasicInsertAndExistTest)
+{
+	MlpSetUInt64::MlpSet ms;
+	ms.Init(20000+1024);  // Initialize with capacity for 1024 elements
+	
+	// Insert the number 0
+	bool inserted = ms.Insert(0);
+	ReleaseAssert(inserted);  // Should return true since 0 was not previously in the set
+	
+	// Check if 0 exists
+	bool exists = ms.Exist(0);
+	ReleaseAssert(exists);  // Should return true since we just inserted 0
+	
+	printf("Successfully inserted and found key 0\n");
+}
+
 }	// annoymous namespace
 
 

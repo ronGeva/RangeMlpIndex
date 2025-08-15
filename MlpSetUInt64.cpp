@@ -8,27 +8,6 @@
 namespace MlpSetUInt64
 {
 
-#include <mutex>
-static std::mutex debug_print_mutex;
-
-#define TRACE
-
-#ifndef TRACE
-#define DEBUG(msg)
-#else
-#define DEBUG(msg) do { \
-    	               auto n = std::chrono::system_clock::now(); \
-    	               auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(n.time_since_epoch()) % std::chrono::seconds(1); \
-    	               std::time_t t = std::chrono::system_clock::to_time_t(n); \
-    	               std::tm tm = *std::localtime(&t); \
-					   const char* file = std::strrchr(__FILE__, '/'); \
-					   file = file ? file + 1 : __FILE__; \				   
-					   std::lock_guard<std::mutex> lock(MlpSetUInt64::debug_print_mutex); \
-    	               std::cout << std::put_time(&tm, "%H:%M:%S.") << std::setw(9) << std::setfill('0') << ns.count() << " " \
-    	                         << "T" << std::this_thread::get_id() << ' ' << file << ':' << __LINE__ << ':' << __func__ \
-    	                         << " - " << msg << std::endl; \
-					} while(0)
-#endif
 
 // Vectorized XXHash utility
 // The hash function is a slightly modified XXH32, to fix a known deficiency 
@@ -256,12 +235,12 @@ LockGuard::~LockGuard()
 
 void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen)
 {
-	generation.store(start_gen, std::memory_order_release);
+	generation.store(start_gen, std::memory_order_seq_cst);
 	assert(!IsOccupied());
 	assert(1 <= ilen && ilen <= 8 && 1 <= dlen && dlen <= 8 && -1 <= firstChild && firstChild <= 255);
-	hash.store(0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit, std::memory_order_release);
-	minKey.store(dkey, std::memory_order_release);
-	childMap.store(firstChild, std::memory_order_release);
+	hash.store(0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit, std::memory_order_seq_cst);
+	minKey.store(dkey, std::memory_order_seq_cst);
+	childMap.store(firstChild, std::memory_order_seq_cst);
 }
 	
 int CuckooHashTableNode::FindNeighboringEmptySlot()
@@ -304,24 +283,24 @@ void CuckooHashTableNode::BitMapSet(int child)
 	assert(0 <= child && child <= 255);
 	if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_seq_cst));
 		ptr[child / 64] |= uint64_t(1) << (child % 64);
 	}
 	else
 	{
 		if (child < 64)
 		{
-			childMap.fetch_or(uint64_t(1) << child, std::memory_order_release);
+			childMap.fetch_or(uint64_t(1) << child, std::memory_order_seq_cst);
 		}
 		else
 		{
 			if (child == 94 || child == 95)
 			{
-				hash.fetch_or(1 << (child - 76), std::memory_order_release);
+				hash.fetch_or(1 << (child - 76), std::memory_order_seq_cst);
 			}
 			else
 			{
-				int offset = ((hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
+				int offset = ((hash.load(std::memory_order_seq_cst) >> 21) & 7) - 4;
 				uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
 				ptr[child / 64 - 1] |= uint64_t(1) << (child % 64);
 			}
@@ -339,27 +318,27 @@ uint64_t* CuckooHashTableNode::AllocateExternalBitMap()
 void CuckooHashTableNode::ExtendToBitMap(uint32_t generation)
 {
 	assert(IsNode() && !IsLeaf() && IsUsingInternalChildMap() && GetChildNum() == 8);
-	uint64_t children = childMap.load(std::memory_order_acquire);
+	uint64_t children = childMap.load(std::memory_order_seq_cst);
 	int offset = FindNeighboringEmptySlot() + 4;
 	assert(1 <= offset && offset <= 7);
-	uint32_t hashVal = hash.load(std::memory_order_acquire);
+	uint32_t hashVal = hash.load(std::memory_order_seq_cst);
 	hashVal &= 0xff03ffffU;
 	hashVal |= (offset << 21);
-	hash.store(hashVal, std::memory_order_release);
+	hash.store(hashVal, std::memory_order_seq_cst);
 	if (offset == 4)
 	{
-		this[offset-4].generation.store(generation, std::memory_order_release);
+		this[offset-4].generation.store(generation, std::memory_order_seq_cst);
 		uint64_t* ptr = AllocateExternalBitMap();
-		childMap.store(reinterpret_cast<uintptr_t>(ptr), std::memory_order_release);
+		childMap.store(reinterpret_cast<uintptr_t>(ptr), std::memory_order_seq_cst);
 	}
 	else
 	{
-		this[offset-4].generation.store(generation, std::memory_order_release);
-		childMap.store(0, std::memory_order_release);
+		this[offset-4].generation.store(generation, std::memory_order_seq_cst);
+		childMap.store(0, std::memory_order_seq_cst);
 		// Initialize the bitmap node with proper atomic stores
-		this[offset-4].hash.store(0xc0000000U, std::memory_order_release);
-		this[offset-4].minKey.store(0, std::memory_order_release);
-		this[offset-4].childMap.store(0, std::memory_order_release);
+		this[offset-4].hash.store(0xc0000000U, std::memory_order_seq_cst);
+		this[offset-4].minKey.store(0, std::memory_order_seq_cst);
+		this[offset-4].childMap.store(0, std::memory_order_seq_cst);
 	}
 	
 	rep(i,0,7)
@@ -395,7 +374,7 @@ static int Bitmap256LowerBound(std::atomic<uint64_t>* ptr, uint32_t child)
 {
 	assert(0 <= child && child <= 255);
 	int idx = child / 64;
-	uint64_t x = ptr[idx].load(std::memory_order_acquire) >> (child % 64);
+	uint64_t x = ptr[idx].load(std::memory_order_seq_cst) >> (child % 64);
 	if (x) 
 	{ 
 		return __builtin_ctzll(x) + child; 
@@ -403,7 +382,7 @@ static int Bitmap256LowerBound(std::atomic<uint64_t>* ptr, uint32_t child)
 	idx++;
 	while (idx < 4)
 	{
-		uint64_t val = ptr[idx].load(std::memory_order_acquire);
+		uint64_t val = ptr[idx].load(std::memory_order_seq_cst);
 		if (val != 0)
 		{
 			return __builtin_ctzll(val) + idx * 64;
@@ -419,9 +398,9 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 	assert(0 <= child && child <= 255);
 	if (IsUsingInternalChildMap())
 	{
-		if (child == 0) { return childMap.load(std::memory_order_acquire) & 255; }
+		if (child == 0) { return childMap.load(std::memory_order_seq_cst) & 255; }
 		int k = GetChildNum();
-		__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_acquire));
+		__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_seq_cst));
 		__m64 cmpTarget = _mm_set1_pi8(child - 1);
 		__m64 res = _mm_max_pu8(cmpTarget, z);
 		res = _mm_cmpeq_pi8(cmpTarget, res);
@@ -434,26 +413,26 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 		{ 
 			return -1; 
 		}
-		return (childMap.load(std::memory_order_acquire) >> ((pos-1)*8)) & 255;
+		return (childMap.load(std::memory_order_seq_cst) >> ((pos-1)*8)) & 255;
 	}
 	else if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_seq_cst));
 		return Bitmap256LowerBound(ptr, child);
 	}
 	else
 	{
-		int offset = (hash.load(std::memory_order_acquire) >> 21) & 7;
+		int offset = (hash.load(std::memory_order_seq_cst) >> 21) & 7;
 		if (child < 64)
 		{
-			uint64_t x = childMap.load(std::memory_order_acquire) >> child;
+			uint64_t x = childMap.load(std::memory_order_seq_cst) >> child;
 			if (x)
 			{	
 				return __builtin_ctzll(x) + child; 
 			}
 			uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset-4]));
 			x = ptr[0] & 0xffffffff3fffffffULL;
-			x |= uint64_t((hash.load(std::memory_order_acquire) >> 18) & 3) << 30;
+			x |= uint64_t((hash.load(std::memory_order_seq_cst) >> 18) & 3) << 30;
 			if (x)
 			{
 				return __builtin_ctzll(x) + 64;
@@ -471,7 +450,7 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 		{
 			uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset-4]));
 			uint64_t x = ptr[0] & 0xffffffff3fffffffULL;
-			x |= uint64_t((hash.load(std::memory_order_acquire) >> 18) & 3) << 30;
+			x |= uint64_t((hash.load(std::memory_order_seq_cst) >> 18) & 3) << 30;
 			x >>= (child - 64);
 			if (x)
 			{
@@ -514,7 +493,7 @@ bool CuckooHashTableNode::ExistChild(int child)
 	if (IsUsingInternalChildMap())
 	{
 		int k = GetChildNum();
-		__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_acquire));
+		__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_seq_cst));
 		__m64 cmpTarget = _mm_set1_pi8(child);
 		__m64 res = _mm_cmpeq_pi8(cmpTarget, z);
 		int msk = _mm_movemask_pi8(res);
@@ -523,7 +502,7 @@ bool CuckooHashTableNode::ExistChild(int child)
 		
 #ifndef NDEBUG
 		bool bruteForceResult = false;
-		uint64_t c = childMap.load(std::memory_order_acquire);
+		uint64_t c = childMap.load(std::memory_order_seq_cst);
 		rep(i,0,k-1)
 		{
 			int x = c & 255;
@@ -536,22 +515,22 @@ bool CuckooHashTableNode::ExistChild(int child)
 	}
 	else if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_seq_cst));
 		return (ptr[child / 64] & (uint64_t(1) << (child % 64))) != 0;
 	}
 	else
 	{
 		if (child < 64)
 		{
-			return (childMap.load(std::memory_order_acquire) & (uint64_t(1) << child)) != 0;
+			return (childMap.load(std::memory_order_seq_cst) & (uint64_t(1) << child)) != 0;
 		}
 		else if (unlikely(child == 94 || child == 95))
 		{
-			return (hash.load(std::memory_order_acquire) & (1 << (child - 76))) != 0;
+			return (hash.load(std::memory_order_seq_cst) & (1 << (child - 76))) != 0;
 		}
 		else
 		{
-			int offset = ((hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
+			int offset = ((hash.load(std::memory_order_seq_cst) >> 21) & 7) - 4;
 			uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
 			return (ptr[child / 64 - 1] & (uint64_t(1) << (child % 64))) != 0;
 		}
@@ -569,7 +548,7 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 		if (likely(k < 8))
 		{
 			SetChildNum(k+1);
-			__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_acquire));
+			__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_seq_cst));
 			__m64 cmpTarget = _mm_set1_pi8(child);
 			__m64 res = _mm_max_pu8(cmpTarget, z);
 			res = _mm_cmpeq_pi8(cmpTarget, res);
@@ -578,11 +557,11 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 			msk++;
 			int pos = __builtin_ffs(msk);
 			assert(1 <= pos && pos <= k + 1);
-			uint64_t larger = (pos == 8) ? 0 : (childMap.load(std::memory_order_acquire) >> ((pos-1)*8) << (pos*8));
-			uint64_t smaller = childMap.load(std::memory_order_acquire) & ((uint64_t(1) << ((pos-1)*8)) - 1);
-			childMap.store(smaller | (uint64_t(child) << ((pos - 1)*8)) | larger, std::memory_order_release);
+			uint64_t larger = (pos == 8) ? 0 : (childMap.load(std::memory_order_seq_cst) >> ((pos-1)*8) << (pos*8));
+			uint64_t smaller = childMap.load(std::memory_order_seq_cst) & ((uint64_t(1) << ((pos-1)*8)) - 1);
+			childMap.store(smaller | (uint64_t(child) << ((pos - 1)*8)) | larger, std::memory_order_seq_cst);
 #ifndef NDEBUG
-			uint64_t tmp = childMap.load(std::memory_order_acquire);
+			uint64_t tmp = childMap.load(std::memory_order_seq_cst);
 			int last = tmp % 256;
 			rep(i, 1, k)
 			{
@@ -610,7 +589,7 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 	vector<int> ret;
 	if (IsUsingInternalChildMap())
 	{
-		uint64_t c = childMap.load(std::memory_order_acquire);
+		uint64_t c = childMap.load(std::memory_order_seq_cst);
 		int k = GetChildNum();
 		rep(i,0,k-1)
 		{
@@ -624,7 +603,7 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 	}
 	else if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_seq_cst));
 		rep(i,0,255)
 		{
 			if (ptr[i/64] & (uint64_t(1) << (i%64)))
@@ -637,12 +616,12 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 	{
 		rep(i,0,63)
 		{
-			if (childMap.load(std::memory_order_acquire) & (uint64_t(1) << i))
+			if (childMap.load(std::memory_order_seq_cst) & (uint64_t(1) << i))
 			{
 				ret.push_back(i);
 			}
 		}
-		int offset = ((hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
+		int offset = ((hash.load(std::memory_order_seq_cst) >> 21) & 7) - 4;
 		uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
 		rep(i, 64, 93)
 		{
@@ -653,7 +632,7 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 		}
 		rep(i, 94, 95)
 		{
-			if (hash.load(std::memory_order_acquire) & (1 << (i - 76)))
+			if (hash.load(std::memory_order_seq_cst) & (1 << (i - 76)))
 			{
 				ret.push_back(i);
 			}
@@ -674,58 +653,59 @@ uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap() && !IsExternalPointerBitMap());
 	uint64_t* ptr = AllocateExternalBitMap();
 	
-	int offset = (hash.load(std::memory_order_acquire) >> 21) & 7;
-	ptr[2] = this[offset-4].generation.load(std::memory_order_acquire); 
-	ptr[0] = childMap.load(std::memory_order_acquire);
+	int offset = (hash.load(std::memory_order_seq_cst) >> 21) & 7;
+	ptr[2] = this[offset-4].generation.load(std::memory_order_seq_cst); 
+	ptr[0] = childMap.load(std::memory_order_seq_cst);
 	// Safely copy atomic fields using proper atomic operations instead of memcpy
 	// Copy the bitmap node structure field by field
-	ptr[1] = this[offset-4].hash.load(std::memory_order_acquire);
-	ptr[3] = this[offset-4].minKey.load(std::memory_order_acquire);
+	ptr[1] = this[offset-4].hash.load(std::memory_order_seq_cst);
+	ptr[3] = this[offset-4].minKey.load(std::memory_order_seq_cst);
 	ptr[1] &= 0xffffffff3fffffffULL;
-	ptr[1] |= uint64_t((hash.load(std::memory_order_acquire) >> 18) & 3) << 30;
+	ptr[1] |= uint64_t((hash.load(std::memory_order_seq_cst) >> 18) & 3) << 30;
 	return ptr;
 }
 	
 void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generation)
 {
-    target->generation.store(generation, std::memory_order_release);
+    target->generation.store(generation, std::memory_order_seq_cst);
+	this->generation.store(generation, std::memory_order_seq_cst);
     target->CopyWithoutGeneration(*this);
 	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
 	{
 		// Only clear the occupied flag to mark this node as free
 		// Don't zero other fields that readers might still be accessing
-		hash.store(0, std::memory_order_release);
+		hash.store(0, std::memory_order_seq_cst);
 		return;
 	}
-	int offset = (hash.load(std::memory_order_acquire) >> 21) & 7;
+	int offset = (hash.load(std::memory_order_seq_cst) >> 21) & 7;
 	int targetOffset = target->FindNeighboringEmptySlot() + 4;
-	uint32_t targetHashVal = target->hash.load(std::memory_order_acquire);
+	uint32_t targetHashVal = target->hash.load(std::memory_order_seq_cst);
 	targetHashVal &= 0xff1fffffU;
 	targetHashVal |= (targetOffset << 21);
-	target->hash.store(targetHashVal, std::memory_order_release);
+	target->hash.store(targetHashVal, std::memory_order_seq_cst);
 	if (targetOffset != 4)
 	{
 		// Safely copy atomic fields using proper atomic operations instead of memcpy
-		target[targetOffset-4].hash.store(this[offset-4].hash.load(std::memory_order_acquire), std::memory_order_release);
-		target[targetOffset-4].generation.store(this[offset-4].generation.load(std::memory_order_acquire), std::memory_order_release);
-		target[targetOffset-4].minKey.store(this[offset-4].minKey.load(std::memory_order_acquire), std::memory_order_release);
-		target[targetOffset-4].childMap.store(this[offset-4].childMap.load(std::memory_order_acquire), std::memory_order_release);
+		target[targetOffset-4].generation.store(this[offset-4].generation.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		target[targetOffset-4].hash.store(this[offset-4].hash.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		target[targetOffset-4].minKey.store(this[offset-4].minKey.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		target[targetOffset-4].childMap.store(this[offset-4].childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
 	}
 	else
 	{
 		uint64_t* ptr = CopyToExternalBitMap();
-		target->childMap.store(reinterpret_cast<uint64_t>(ptr), std::memory_order_release);
+		target->childMap.store(reinterpret_cast<uint64_t>(ptr), std::memory_order_seq_cst);
 	}
 	// Only clear the occupied flag to mark this node as free
 	// Don't zero other fields that readers might still be accessing
-	hash.store(0, std::memory_order_release);
+	hash.store(0, std::memory_order_seq_cst);
 	// Only clear the occupied flag of the bitmap node
-	this[offset-4].hash.store(0, std::memory_order_release);
+	this[offset-4].hash.store(0, std::memory_order_seq_cst);
 #ifndef NDEBUG
 	assert(target->IsNode());
 	if (!target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
 	{
-		int o = (target->hash.load(std::memory_order_acquire) >> 21) & 7;
+		int o = (target->hash.load(std::memory_order_seq_cst) >> 21) & 7;
 		assert(target[o-4].IsOccupied() && !target[o-4].IsNode());
 	}
 #endif
@@ -734,30 +714,30 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 void CuckooHashTableNode::RelocateBitMap()
 {
 	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap() && !IsExternalPointerBitMap());
-	uint64_t children = childMap.load(std::memory_order_acquire);
+	uint64_t children = childMap.load(std::memory_order_seq_cst);
 	int offset = FindNeighboringEmptySlot() + 4;
 	assert(1 <= offset && offset <= 7);
-	int oldOffset = (hash.load(std::memory_order_acquire) >> 21) & 7;
+	int oldOffset = (hash.load(std::memory_order_seq_cst) >> 21) & 7;
 	assert(offset != oldOffset);
 	if (offset == 4)
 	{
 		uint64_t* ptr = CopyToExternalBitMap();
-		childMap.store(reinterpret_cast<uint64_t>(ptr), std::memory_order_release);
+		childMap.store(reinterpret_cast<uint64_t>(ptr), std::memory_order_seq_cst);
 	}
 	else
 	{
 		// Safely copy atomic fields using proper atomic operations instead of memcpy
-		this[offset-4].hash.store(this[oldOffset-4].hash.load(std::memory_order_acquire), std::memory_order_release);
-		this[offset-4].generation.store(this[oldOffset-4].generation.load(std::memory_order_acquire), std::memory_order_release);
-		this[offset-4].minKey.store(this[oldOffset-4].minKey.load(std::memory_order_acquire), std::memory_order_release);
-		this[offset-4].childMap.store(this[oldOffset-4].childMap.load(std::memory_order_acquire), std::memory_order_release);
+		this[offset-4].hash.store(this[oldOffset-4].hash.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		this[offset-4].generation.store(this[oldOffset-4].generation.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		this[offset-4].minKey.store(this[oldOffset-4].minKey.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		this[offset-4].childMap.store(this[oldOffset-4].childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
 	}
 	// Only clear the occupied flag of the old bitmap node
-	this[oldOffset-4].hash.store(0, std::memory_order_release);
-	uint32_t hashVal = hash.load(std::memory_order_acquire);
+	this[oldOffset-4].hash.store(0, std::memory_order_seq_cst);
+	uint32_t hashVal = hash.load(std::memory_order_seq_cst);
 	hashVal &= 0xfff1fffffU;
 	hashVal |= offset << 21;
-	hash.store(hashVal, std::memory_order_release);
+	hash.store(hashVal, std::memory_order_seq_cst);
 	assert(offset == 4 || (this[offset-4].IsOccupied() && !this[offset-4].IsNode()));
 }	
 
@@ -857,20 +837,24 @@ uint32_t CuckooHashTable::ReservePositionForInsert(int ilen, uint64_t dkey, uint
 	h2 = XXH::XXHashFn2(dkey, ilen) & htMask;
 	if (ht[h1].IsEqual(expectedHash, shiftLen, shiftedKey))
 	{
+		DEBUG("h1=" << h1 << " exist=" << exist << " failed=" << failed);
 		exist = true;
 		return h1;
 	}
 	if (ht[h2].IsEqual(expectedHash, shiftLen, shiftedKey))
 	{
+		DEBUG("h2=" << h2 << " exist=" << exist << " failed=" << failed);
 		exist = true;
 		return h2;
 	}
 	if (!ht[h1].IsOccupied())
 	{
+		DEBUG("h1=" << h1 << " exist=" << exist << " failed=" << failed);
 		return h1;
 	}
 	if (!ht[h2].IsOccupied())
 	{
+		DEBUG("h2=" << h2 << " exist=" << exist << " failed=" << failed);
 		return h2;
 	}
 	uint32_t victimPosition = rand()%2 ? h1 : h2;
@@ -896,6 +880,7 @@ uint32_t CuckooHashTable::Insert(int ilen, int dlen, uint64_t dkey, int firstChi
 	hash18bit = hash18bit & ((1<<18) - 1);
 	
 	uint32_t pos = ReservePositionForInsert(ilen, dkey, hash18bit, exist, failed, generation);
+	DEBUG("pos=" << pos << " exist=" << exist << " failed=" << failed);
 	if (!exist && !failed)
 	{
 		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild, generation);
@@ -963,7 +948,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
 {
 	while (true)
 	{
-		uint32_t generation = cur_generation.load(std::memory_order_acquire);
+		uint32_t generation = cur_generation.load(std::memory_order_seq_cst);
 		// LockGuard lock(&displacement_mutex, true);
 		int ret = QueryLCPInternal(key, idxLen, allPositions1, allPositions2, expectedHash, generation);
 		if (ret >= 0)
@@ -1017,34 +1002,47 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 	int len = 7;
 
 	for (; len >= 2; len --)
-	{
-		if ((ht[allPositions1[len]].hash.load(std::memory_order_acquire) & 0xf803ffffU) == expectedHash[len]) 
+	{		
+		if ((ht[allPositions1[len]].hash.load(std::memory_order_seq_cst) & 0xf803ffffU) == expectedHash[len]) 
 		{
-			if (ht[allPositions1[len]].generation.load(std::memory_order_acquire) > generation)
+			if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation)
 			{
 				return -1;
 			}
 			break;
 		}
-		if ((ht[allPositions2[len]].hash.load(std::memory_order_acquire) & 0xf803ffffU) == expectedHash[len])
+		if ((ht[allPositions2[len]].hash.load(std::memory_order_seq_cst) & 0xf803ffffU) == expectedHash[len])
 		{
-			if (ht[allPositions2[len]].generation.load(std::memory_order_acquire) > generation)
+			if (ht[allPositions2[len]].generation.load(std::memory_order_seq_cst) > generation)
 			{
 				return -1;
 			}
 			allPositions1[len] = allPositions2[len];
 			break;
 		}
-		else
+		// Check generation at start of each iteration to detect expiry during loop
+		if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation)
 		{
-			allPositions1[len] = 0;
+			return -1;
 		}
+		if (ht[allPositions2[len]].generation.load(std::memory_order_seq_cst) > generation)
+		{
+			return -1;
+		}		
+		allPositions1[len] = 0;
 	}
 	if (len < 2)
 	{
 #ifdef ENABLE_STATS
 		stats.m_lcpResultHistogram[2]++;
 #endif
+        DEBUG("!!!");
+		len = 7;
+		for (; len >= 2; len --)
+		{		
+			DEBUG("generation1=" << ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) << " pos=" << allPositions1[len]);
+			DEBUG("generation2=" << ht[allPositions2[len]].generation.load(std::memory_order_seq_cst) << " pos=" << allPositions2[len]);
+		}
 		return 2;
 	}
 
@@ -1053,20 +1051,22 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 		uint32_t hash18bit = XXH::XXHashFn3(key, len + 1);
 		hash18bit = hash18bit & ((1<<18) - 1);
 		uint32_t expectedx = hash18bit | (len << 27) | 0x80000000U;
-		assert((ht[allPositions1[len]].hash.load(std::memory_order_acquire) & 0xf803ffffU) == expectedx);
+		assert((ht[allPositions1[len]].hash.load(std::memory_order_seq_cst) & 0xf803ffffU) == expectedx);
 	}
 #endif
 
 	int shiftLen = 64 - 8 * (len + 1);
-	if (unlikely((ht[allPositions1[len]].minKey.load(std::memory_order_acquire) >> shiftLen) != (key >> shiftLen))) goto _slowpath;
+	if (unlikely((ht[allPositions1[len]].minKey.load(std::memory_order_seq_cst) >> shiftLen) != (key >> shiftLen))) goto _slowpath;
+	// Check generation after accessing minKey to ensure data read is still valid
+	if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation) return -1;
 
 	idxLen = len + 1;
 #ifdef ENABLE_STATS
 	stats.m_lcpResultHistogram[idxLen]++;
 #endif
 	{
-		uint64_t xorValue = key ^ ht[allPositions1[len]].minKey.load(std::memory_order_acquire);
-		if (ht[allPositions1[len]].generation.load(std::memory_order_acquire) > generation)
+		uint64_t xorValue = key ^ ht[allPositions1[len]].minKey.load(std::memory_order_seq_cst);
+		if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation)
 		{
 			return -1;
 		}
@@ -1083,19 +1083,34 @@ _slowpath:
 #ifdef ENABLE_STATS
 		stats.m_slowpathCount++;
 #endif
+        if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation) {
+			return -1;
+		}
 
 		if (ht[allPositions1[7]].IsEqualNoHash(key, 8)) { idxLen = 8; goto _slowpath_end; }
 		if (ht[allPositions2[7]].IsEqualNoHash(key, 8)) { allPositions1[7] = allPositions2[7]; idxLen = 8; goto _slowpath_end; }
+		// Check generation after accessing nodes to ensure data read is still valid
+		if (ht[allPositions1[7]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[7]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
 		if (ht[allPositions1[6]].IsEqualNoHash(key, 7)) { idxLen = 7; goto _slowpath_end; }
 		if (ht[allPositions2[6]].IsEqualNoHash(key, 7)) { allPositions1[6] = allPositions2[6]; idxLen = 7; goto _slowpath_end; }
+		// Check generation after accessing nodes to ensure data read is still valid
+		if (ht[allPositions1[6]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[6]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
 		if (ht[allPositions1[5]].IsEqualNoHash(key, 6)) { idxLen = 6; goto _slowpath_end; }
 		if (ht[allPositions2[5]].IsEqualNoHash(key, 6)) { allPositions1[5] = allPositions2[5]; idxLen = 6; goto _slowpath_end; }
+		// Check generation after accessing nodes to ensure data read is still valid
+		if (ht[allPositions1[5]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[5]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
 		if (ht[allPositions1[4]].IsEqualNoHash(key, 5)) { idxLen = 5; goto _slowpath_end; }
 		if (ht[allPositions2[4]].IsEqualNoHash(key, 5)) { allPositions1[4] = allPositions2[4]; idxLen = 5; goto _slowpath_end; }
+		// Check generation after accessing nodes to ensure data read is still valid
+		if (ht[allPositions1[4]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[4]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
 		if (ht[allPositions1[3]].IsEqualNoHash(key, 4)) { idxLen = 4; goto _slowpath_end; }
 		if (ht[allPositions2[3]].IsEqualNoHash(key, 4)) { allPositions1[3] = allPositions2[3]; idxLen = 4; goto _slowpath_end; }
+		// Check generation after accessing nodes to ensure data read is still valid
+		if (ht[allPositions1[3]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[3]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
 		if (ht[allPositions1[2]].IsEqualNoHash(key, 3)) { idxLen = 3; goto _slowpath_end; }
 		if (ht[allPositions2[2]].IsEqualNoHash(key, 3)) { allPositions1[2] = allPositions2[2]; idxLen = 3; goto _slowpath_end; }
+		// Check generation after accessing nodes to ensure data read is still valid
+		if (ht[allPositions1[2]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[2]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
 #ifdef ENABLE_STATS
 		stats.m_lcpResultHistogram[2]++;
 #endif
@@ -1105,8 +1120,8 @@ _slowpath_end:
 #ifdef ENABLE_STATS
 		stats.m_lcpResultHistogram[idxLen]++;
 #endif
-		uint64_t xorValue = key ^ ht[allPositions1[idxLen-1]].minKey.load(std::memory_order_acquire);
-		if (ht[allPositions1[idxLen-1]].generation.load(std::memory_order_acquire) > generation)
+		uint64_t xorValue = key ^ ht[allPositions1[idxLen-1]].minKey.load(std::memory_order_seq_cst);
+		if (ht[allPositions1[idxLen-1]].generation.load(std::memory_order_seq_cst) > generation)
 		{
 			return -1;
 		}
@@ -1149,7 +1164,7 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 #ifdef ENABLE_STATS
 		stats.m_movedNodesCount++;
 #endif
-        ht[h1].generation.store(generation, std::memory_order_release);
+        ht[h1].generation.store(generation, std::memory_order_seq_cst);
 		ht[victimPosition].MoveNode(&ht[h1], generation);
 	}
 	else
@@ -1160,7 +1175,7 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 			CuckooHashTableNode* target = &ht[victimPosition + i];
 			if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
 			{
-				int offset = ((target->hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
+				int offset = ((target->hash.load(std::memory_order_seq_cst) >> 21) & 7) - 4;
 				if (offset + i == 0)
 				{
 					owner = target;
@@ -1310,25 +1325,26 @@ void MlpSet::Init(uint32_t maxSetSize)
 
 bool MlpSet::Insert(uint64_t value)
 {
-	// DEBUG("Insert start");
 	assert(m_hasCalledInit);
-	uint32_t cur_gen = cur_generation.load(std::memory_order_acquire) + 1;
+	uint32_t cur_gen = cur_generation.load(std::memory_order_seq_cst) + 1;
+	DEBUG("insert=" << value << " cur_gen=" << cur_gen);
 	int lcpLen;
 	// Handle LCP < 2 case first
 	// This is supposed to be a L1 hit (working set 8KB)
 	//
 	{
 		uint64_t h16bits = value >> 48;
-		if (unlikely((m_treeDepth1[h16bits / 64].load(std::memory_order_acquire) & (uint64_t(1) << (h16bits % 64))) == 0))
+		if (unlikely((m_treeDepth1[h16bits / 64].load(std::memory_order_seq_cst) & (uint64_t(1) << (h16bits % 64))) == 0))
 		{
 			lcpLen = 2;
 			uint64_t rootBit = uint64_t(1) << ((h16bits >> 8) % 64);
 			uint64_t depth1Bit = uint64_t(1) << (h16bits % 64);
-			m_root[(h16bits >> 8) / 64].fetch_or(rootBit, std::memory_order_release);
-			m_treeDepth1[h16bits / 64].fetch_or(depth1Bit, std::memory_order_release);
+			m_root[(h16bits >> 8) / 64].fetch_or(rootBit, std::memory_order_seq_cst);
+			m_treeDepth1[h16bits / 64].fetch_or(depth1Bit, std::memory_order_seq_cst);
 			goto _end;
 		}
 	}
+	DEBUG("reached!");
 	
 	// Issue the prefetch in case LCP turns out to be 2
 	//
@@ -1366,12 +1382,12 @@ bool MlpSet::Insert(uint64_t value)
 			{
 				// path-compression string matched, no need to split
 				//
-				m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_release);
+				m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_seq_cst);
 				m_hashTable.ht[pos].AddChild((value >> (56 - lcpLen * 8)) % 256, cur_gen);
-				if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
+				if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_seq_cst))
 				{
 					minKeyUpdated = true;
-					m_hashTable.ht[pos].minKey.store(value, std::memory_order_release);
+					m_hashTable.ht[pos].minKey.store(value, std::memory_order_seq_cst);
 				}
 			}
 			else
@@ -1383,7 +1399,7 @@ bool MlpSet::Insert(uint64_t value)
 				//     only two children (corresponding byte of ht[pos].minKey and value)
 				//     Now ht[pos] becomes the splitting point
 				//
-				uint64_t minKey = m_hashTable.ht[pos].minKey.load(std::memory_order_acquire);
+				uint64_t minKey = m_hashTable.ht[pos].minKey.load(std::memory_order_seq_cst);
 				uint32_t oldHash18bit = m_hashTable.ht[pos].GetHash18bit();
 #ifndef NDEBUG
 				vector<int> oldChildList = m_hashTable.ht[pos].GetAllChildren();
@@ -1408,8 +1424,8 @@ bool MlpSet::Insert(uint64_t value)
 					// DEBUG("Locking");
 					// LockGuard lock(&displacement_mutex, false);
 					// DEBUG("locked");
+					m_hashTable.ht[x].generation.store(cur_gen, std::memory_order_seq_cst);
 					m_hashTable.ht[pos].MoveNode(&(m_hashTable.ht[x]), cur_gen);
-					m_hashTable.ht[x].generation.store(cur_gen, std::memory_order_release);
 					m_hashTable.ht[x].AlterIndexKeyLen(lcpLen + 1);
 					m_hashTable.ht[x].AlterHash18bit(newHash18bit);
 				}
@@ -1443,7 +1459,7 @@ bool MlpSet::Insert(uint64_t value)
 					assert(found);
 					assert(m_hashTable.ht[x].GetIndexKeyLen() == ilen);
 					assert(m_hashTable.ht[x].GetFullKeyLen() == lcpLen);
-					assert(m_hashTable.ht[x].minKey.load(std::memory_order_acquire) == min(value, minKey));
+					assert(m_hashTable.ht[x].minKey.load(std::memory_order_seq_cst) == min(value, minKey));
 					vector<int> ch = m_hashTable.ht[x].GetAllChildren();
 					assert(ch.size() == 2);
 					int expectedChild1 = (value >> (56 - lcpLen * 8)) % 256;
@@ -1460,7 +1476,7 @@ bool MlpSet::Insert(uint64_t value)
 					assert(found);
 					assert(m_hashTable.ht[x].GetIndexKeyLen() == lcpLen + 1);
 					assert(m_hashTable.ht[x].GetFullKeyLen() == oldFullKeyLen);
-					assert(m_hashTable.ht[x].minKey.load(std::memory_order_acquire) == minKey);
+					assert(m_hashTable.ht[x].minKey.load(std::memory_order_seq_cst) == minKey);
 					vector<int> ch = m_hashTable.ht[x].GetAllChildren();
 					assert(ch.size() == oldChildList.size());
 					rep(i, 0, int(ch.size()) - 1)
@@ -1484,10 +1500,10 @@ bool MlpSet::Insert(uint64_t value)
 					if (m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
 					{
 						assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
-						if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
+						if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_seq_cst))
 						{
-							m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_release);
-							m_hashTable.ht[pos].minKey.store(value, std::memory_order_release);
+							m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_seq_cst);
+							m_hashTable.ht[pos].minKey.store(value, std::memory_order_seq_cst);
 						}
 						else
 						{
@@ -1504,10 +1520,10 @@ bool MlpSet::Insert(uint64_t value)
 						if (m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
 						{
 							assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
-							if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
+							if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_seq_cst))
 							{
-								m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_release);
-								m_hashTable.ht[pos].minKey.store(value, std::memory_order_release);
+								m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_seq_cst);
+								m_hashTable.ht[pos].minKey.store(value, std::memory_order_seq_cst);
 							}
 							else
 							{
@@ -1540,15 +1556,15 @@ _end:
 	if (lcpLen == 2)
 	{
 		uint64_t depth2Bit = uint64_t(1) << ((value >> 40) % 64);
-		assert((m_treeDepth2[(value >> 40) / 64].load(std::memory_order_acquire) & depth2Bit) == 0);
-		m_treeDepth2[(value >> 40) / 64].fetch_or(depth2Bit, std::memory_order_release);
+		assert((m_treeDepth2[(value >> 40) / 64].load(std::memory_order_seq_cst) & depth2Bit) == 0);
+		m_treeDepth2[(value >> 40) / 64].fetch_or(depth2Bit, std::memory_order_seq_cst);
 	}
 
 	// Memory fence to ensure all writes are visible to readers before updating generation
-	std::atomic_thread_fence(std::memory_order_release);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	
 	// Update generation after fence to ensure readers see consistent state
-	cur_generation.store(cur_gen, std::memory_order_release);
+	cur_generation.store(cur_gen, std::memory_order_seq_cst);
 	
 	return true;
 }
@@ -1566,6 +1582,9 @@ bool MlpSet::Exist(uint64_t value)
 		                              allPositions1 /*out*/, 
 		                              allPositions2 /*out*/, 
 		                              expectedHash /*out*/);
+	if (lcpLen != 8) {
+		DEBUG("lcpLen=" << lcpLen << " value=" << value);
+	}
 	return (lcpLen == 8);
 }
 
@@ -1603,7 +1622,7 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 	}
 	if (lcpLen == 8)
 	{
-		if (generation < m_hashTable.ht[allPositions[0][ilen - 1]].generation.load(std::memory_order_acquire))
+		if (generation < m_hashTable.ht[allPositions[0][ilen - 1]].generation.load(std::memory_order_seq_cst))
 		{
 			return CuckooHashTable::LookupMustExistPromise();
 		}
@@ -1624,9 +1643,14 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 		{
 			// path compression string matches, lower bound on child
 			//
+			// Check generation before accessing node methods
+			if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+			{
+				return CuckooHashTable::LookupMustExistPromise();
+			}
 			uint32_t child = (value >> (56 - dlen * 8)) & 255;
 			int lbChild = m_hashTable.ht[pos].LowerBoundChild(child);
-			if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_acquire))
+			if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
 			{
 				return CuckooHashTable::LookupMustExistPromise();
 			}
@@ -1647,9 +1671,9 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			// path compression string does not match
 			// either the given value is smaller than the whole subtree, or larger than the whole subtree
 			//
-			if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
+			if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_seq_cst))
 			{
-				if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_acquire))
+				if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
 				{
 					return CuckooHashTable::LookupMustExistPromise();
 				}
@@ -1680,19 +1704,35 @@ _parent:
 			rep(k, 0, 1)
 			{
 				uint32_t pos = allPositions[k][ilen - 1];
+				// Check generation before accessing node methods
+				if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+				{
+					return CuckooHashTable::LookupMustExistPromise();
+				}
 				if (m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
 				{
 					assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 					int dlen = m_hashTable.ht[pos].GetFullKeyLen();
-					assert((m_hashTable.ht[pos].minKey.load(std::memory_order_acquire) >> (64 - dlen * 8)) == (value >> (64 - dlen * 8)));
+					// Check generation again after method calls to ensure results are valid
+					if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+					{
+						return CuckooHashTable::LookupMustExistPromise();
+					}
+					assert((m_hashTable.ht[pos].minKey.load(std::memory_order_seq_cst) >> (64 - dlen * 8)) == (value >> (64 - dlen * 8)));
 					uint32_t child = (value >> (56 - dlen * 8)) & 255;
 					if (child < 255)
 					{
-						int lbChild = m_hashTable.ht[pos].LowerBoundChild(child + 1);
-						if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_acquire))
+						// Check generation before accessing node methods
+						if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
 						{
 							return CuckooHashTable::LookupMustExistPromise();
-						}	
+						}
+						int lbChild = m_hashTable.ht[pos].LowerBoundChild(child + 1);
+						// Check generation again after method call to ensure result is valid
+						if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+						{
+							return CuckooHashTable::LookupMustExistPromise();
+						}
 						if (lbChild != -1) 
 						{
 							assert(lbChild != child);
@@ -1784,14 +1824,15 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 	// DEBUG("LowerBound start");
 	do {
 		// LockGuard lock(&displacement_mutex, true);
-		Promise p = LowerBoundInternal(value, found, cur_generation.load(std::memory_order_acquire));
+		uint32_t generation = cur_generation.load(std::memory_order_seq_cst);
+		Promise p = LowerBoundInternal(value, found, generation);
 		if (!found) {
 			return 0xffffffffffffffffULL;
 		}
 		if (p.IsValid()) {
 			p.Prefetch();
 			uint64_t result = p.Resolve();
-			if (p.IsGenerationValid(cur_generation.load(std::memory_order_acquire))) {
+			if (p.IsGenerationValid(generation)) {
 				return result;
 			} else {
 			    std::cout << "LowerBound failed: generation mismatch" << std::endl;

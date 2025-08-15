@@ -1,5 +1,6 @@
 #include "common.h"
 #include "MlpSetUInt64.h"
+
 #include "gtest/gtest.h"
 
 #include <thread>
@@ -51,7 +52,8 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
             ReleaseAssert(inserted);
             // Additional fence to ensure Insert completion is visible before count update
             // std::atomic_thread_fence(std::memory_order_seq_cst);
-            insertedCount.store(v + 1, std::memory_order_release);
+            insertedCount.store(v + 1, std::memory_order_seq_cst);
+            // DEBUG("inserted " << v);
 // #ifndef NDEBUG
             // if (((v + 1) % 200000ULL) == 0ULL)
             // {
@@ -59,7 +61,7 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
             // }
 // #endif
         }
-        stopReaders.store(true, std::memory_order_release);
+        stopReaders.store(true, std::memory_order_seq_cst);
         auto t1 = std::chrono::steady_clock::now();
         writerTimeNs = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     });
@@ -81,7 +83,7 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
             auto t0 = std::chrono::steady_clock::now();
             while (!stopReaders.load(std::memory_order_acquire))
             {
-                uint64_t c = insertedCount.load(std::memory_order_acquire);
+                uint64_t c = insertedCount.load(std::memory_order_seq_cst);
                 if (c == 0) { continue; }
 
                 // Additional fence to ensure we see all writes that happened before the count update
