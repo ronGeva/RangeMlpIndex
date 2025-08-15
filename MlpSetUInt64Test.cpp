@@ -132,7 +132,7 @@ TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
 			firstChild = row->children[0];
 		}
 		bool exist, failed;
-		uint32_t pos = ht.Insert(row->ilen, row->dlen, row->minv, firstChild, exist, failed);
+		uint32_t pos = ht.Insert(row->ilen, row->dlen, row->minv, firstChild, exist, failed, 0);
 		ReleaseAssert(!exist);
 		ReleaseAssert(!failed);
 		ReleaseAssert(ht.ht[pos].GetIndexKeyLen() == row->ilen);
@@ -309,7 +309,7 @@ TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 			S[ilen][key] = fullKey;
 			
 			bool exist, failed;
-			uint32_t pos = ht.Insert(ilen, dlen, fullKey, (dlen == 8 ? -1 : 233) /*firstChild*/, exist, failed);
+			uint32_t pos = ht.Insert(ilen, dlen, fullKey, (dlen == 8 ? -1 : 233) /*firstChild*/, exist, failed, 0);
 			ReleaseAssert(!exist);
 			ReleaseAssert(!failed);
 			ReleaseAssert(ht.ht[pos].GetIndexKeyLen() == ilen);
@@ -433,9 +433,9 @@ void AssertTreeShapeEqualA(StupidUInt64Trie::Trie& st, MlpSetUInt64::MlpSet& ms,
 		int ilen = it->ilen;
 		int dlen = it->dlen;
 		uint64_t key = it->minv;
-		ReleaseAssert((ms.GetRootPtr()[(key >> 56) / 64] & (uint64_t(1) << ((key >> 56) % 64))) != 0);
-		ReleaseAssert((ms.GetLv1Ptr()[(key >> 48) / 64] & (uint64_t(1) << ((key >> 48) % 64))) != 0);
-		ReleaseAssert((ms.GetLv2Ptr()[(key >> 40) / 64] & (uint64_t(1) << ((key >> 40) % 64))) != 0);
+		ReleaseAssert((ms.GetRootPtr()[(key >> 56) / 64].load() & (uint64_t(1) << ((key >> 56) % 64))) != 0);
+		ReleaseAssert((ms.GetLv1Ptr()[(key >> 48) / 64].load() & (uint64_t(1) << ((key >> 48) % 64))) != 0);
+		ReleaseAssert((ms.GetLv2Ptr()[(key >> 40) / 64].load() & (uint64_t(1) << ((key >> 40) % 64))) != 0);
 		if (ilen >= 4)
 		{
 			bool found;

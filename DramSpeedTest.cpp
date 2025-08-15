@@ -126,8 +126,8 @@ TEST(DramSpeedTest, HWAdjacentPrefetcher)
 	printf("This hardware prefetcher automatically prefetches adjacent cache \n");
 	printf("line in the 128-byte block (the block is defined to start at a multiple of 128).\n");
 	
-	atype* a = AllocateMemory(true /*usingHugePage*/);
-	Auto(DeallocateMemory(a, true /*usingHugePage*/));
+	atype* a = AllocateMemory(false /*usingHugePage*/);
+	Auto(DeallocateMemory(a, false /*usingHugePage*/));
 	
 	uint32_t* q = new uint32_t[numQueries];
 	ReleaseAssert(q != nullptr);

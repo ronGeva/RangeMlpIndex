@@ -11,7 +11,8 @@ namespace MlpSetUInt64
 
 // Single writer implies no need for atomic operation. On the other hand using atomic we,
 // can reduce amount of times we see an old generation which may cause more restarts, might be worth to try both atomic and non-atomic
-static uint32_t cur_generation;
+static std::atomic<uint32_t> cur_generation;
+
 
 // Displacement can't be protected by generation.
 static std::shared_mutex displacement_mutex;
@@ -218,7 +219,7 @@ struct CuckooHashTableNode
 	
 	// Move this node as well as its bitmap to target
 	//
-	void MoveNode(CuckooHashTableNode* target);
+	void MoveNode(CuckooHashTableNode* target, uint32_t generation);
 	
 	// Relocate its internal bitmap to another position
 	//
@@ -269,6 +270,10 @@ public:
 		{ }
 		
 		bool IsValid() { return valid; }
+
+		bool IsGenerationValid(uint32_t generation) { 
+			return h1->generation.load(std::memory_order_acquire) <= generation && (h2 == nullptr || h2->generation.load(std::memory_order_acquire) <= generation);
+		}
 		
 		uint64_t Resolve()
 		{
@@ -284,6 +289,8 @@ public:
 				return h2->minKey;
 			}
 		}
+
+		
 		
 		void Prefetch()
 		{
@@ -310,13 +317,13 @@ public:
 	
 	// Execute Cuckoo displacements to make up a slot for the specified key
 	//
-	uint32_t ReservePositionForInsert(int ilen, uint64_t dkey, uint32_t hash18bit, bool& exist, bool& failed);
+	uint32_t ReservePositionForInsert(int ilen, uint64_t dkey, uint32_t hash18bit, bool& exist, bool& failed, uint32_t generation);
 	
 	// Insert a node into the hash table
 	// Since we use path-compression, if the node is not a leaf, it must has at least one child already known
 	// In case it is a leaf, firstChild should be -1
 	//
-	uint32_t Insert(int ilen, int dlen, uint64_t dkey, int firstChild, bool& exist, bool& failed);
+	uint32_t Insert(int ilen, int dlen, uint64_t dkey, int firstChild, bool& exist, bool& failed, uint32_t generation);
 
 	// Single point lookup, returns index in hash table if found
 	//
@@ -362,7 +369,7 @@ public:
 #endif
 
 private:
-	void HashTableCuckooDisplacement(uint32_t victimPosition, int rounds, bool& failed);
+	void HashTableCuckooDisplacement(uint32_t victimPosition, int rounds, bool& failed, uint32_t generation);
 	
 #ifndef NDEBUG
 	bool m_hasCalledInit;
@@ -418,9 +425,9 @@ public:
 	
 	// For debug purposes only
 	//
-	uint64_t* GetRootPtr() { return m_root; }
-	uint64_t* GetLv1Ptr() { return m_treeDepth1; }
-	uint64_t* GetLv2Ptr() { return m_treeDepth2; }
+	std::atomic<uint64_t>* GetRootPtr() { return m_root; }
+	std::atomic<uint64_t>* GetLv1Ptr() { return m_treeDepth1; }
+	std::atomic<uint64_t>* GetLv2Ptr() { return m_treeDepth2; }
 	CuckooHashTable* GetHtPtr() { return &m_hashTable; }
 	
 #ifdef ENABLE_STATS
@@ -441,13 +448,13 @@ private:
 	// root and depth 1 should be in L1 or L2 cache
 	// root of the tree, length 256 bits (32B)
 	//
-	uint64_t* m_root;
+	std::atomic<uint64_t>* m_root;
 	// lv1 of the tree, 256^2 bits (8KB)
 	//
-	uint64_t* m_treeDepth1;
+	std::atomic<uint64_t>* m_treeDepth1;
 	// lv2 of the tree, 256^3 bits (2MB), not supposed to be in cache
 	//
-	uint64_t* m_treeDepth2;
+	std::atomic<uint64_t>* m_treeDepth2;
 	// hash mapping parts of the tree, starting at lv3
 	//
 	CuckooHashTable m_hashTable;
