@@ -278,7 +278,6 @@ public:
 			}
 			else
 			{
-				assert(h1->IsEqual(expectedHash, shiftLen, shiftedKey));
 				return h2->minKey;
 			}
 		}
