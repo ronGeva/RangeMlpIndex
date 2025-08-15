@@ -41,7 +41,7 @@ struct CuckooHashTableNode
 	// 3 bit: # of childs if using internal map, 0 + bitmap's highest 2 bits if using external bitmap
 	// 18 bit: hash 
 	//
-	uint32_t hash;	
+	std::atomic<uint32_t> hash;	
 	// points to min node in this subtree - UNUSED in the original implementation
 	std::atomic<uint32_t> generation;
 	// the min node's full key
@@ -49,37 +49,38 @@ struct CuckooHashTableNode
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
 	// the whole minKey is the min node's key
 	//
-	uint64_t minKey;
+	std::atomic<uint64_t> minKey;
 	// the child map
 	// when using internal map, each byte stores a child
 	// when using external bitmap, each bit represent whether the corresponding child exists
 	// when using pointer external bitmap, this is the pointer to the 32-byte bitmap
 	// when it is a leaf, this is the opaque data pointer
 	// 
-	uint64_t childMap;
+	std::atomic<uint64_t> childMap;
 
 	// Copy fields from another node in a way that works with std::atomic
 	void CopyWithoutGeneration(const CuckooHashTableNode& other) {
-		hash = other.hash;
-		minKey = other.minKey;
-		childMap = other.childMap;
+		hash.store(other.hash.load(std::memory_order_acquire), std::memory_order_release);
+		minKey.store(other.minKey.load(std::memory_order_acquire), std::memory_order_release);
+		childMap.store(other.childMap.load(std::memory_order_acquire), std::memory_order_release);
 	}
 
 	
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)
 	{
-		return ((hash & 0xf803ffffU) == expectedHash) && (minKey >> shiftLen == shiftedKey);
+		return ((hash.load(std::memory_order_acquire) & 0xf803ffffU) == expectedHash) && (minKey.load(std::memory_order_acquire) >> shiftLen == shiftedKey);
 	}
 	
 	bool IsEqualNoHash(uint64_t key, int len)
 	{
-		return ((hash & 0xf8000000U) == (0x80000000U | uint32_t(((len) - 1) << 27)) && (key >> (64-8*len)) == (minKey >> (64-8*len)));
+		return ((hash.load(std::memory_order_acquire) & 0xf8000000U) == (0x80000000U | uint32_t(((len) - 1) << 27)) && (key >> (64-8*len)) == (minKey.load(std::memory_order_acquire) >> (64-8*len)));
 	}
 	
 	int GetOccupyFlag()
 	{
-		assert((hash >> 30) != 1);
-		return hash >> 30;
+		uint32_t hashVal = hash.load(std::memory_order_acquire);
+		assert((hashVal >> 30) != 1);
+		return hashVal >> 30;
 	}
 	
 	bool IsOccupied()
@@ -103,20 +104,20 @@ struct CuckooHashTableNode
 	uint32_t GetHash18bit()
 	{
 		assert(IsNode());
-		return hash & ((1 << 18) - 1);
+		return hash.load(std::memory_order_acquire) & ((1 << 18) - 1);
 	}
 	
 	int GetIndexKeyLen()
 	{
 		assert(IsNode());
-		return 1 + ((hash >> 27) & 7);
+		return 1 + ((hash.load(std::memory_order_acquire) >> 27) & 7);
 	}
 	
 	uint64_t GetIndexKey()
 	{
 		assert(IsNode());
 		int shiftLen = 64 - GetIndexKeyLen() * 8;
-		return minKey >> shiftLen << shiftLen;
+		return minKey.load(std::memory_order_acquire) >> shiftLen << shiftLen;
 	}
 	
 	// DANGER: make sure you know what you are doing...
@@ -124,8 +125,10 @@ struct CuckooHashTableNode
 	void AlterIndexKeyLen(int newIndexKeyLen)
 	{
 		assert(IsNode());
-		hash &= 0xc7ffffffU;
-		hash |= (newIndexKeyLen - 1) << 27;
+		uint32_t hashVal = hash.load(std::memory_order_acquire);
+		hashVal &= 0xc7ffffffU;
+		hashVal |= (newIndexKeyLen - 1) << 27;
+		hash.store(hashVal, std::memory_order_release);
 	}
 	
 	// DANGER: make sure you know what you are doing...
@@ -134,20 +137,22 @@ struct CuckooHashTableNode
 	{
 		assert(IsNode());
 		assert(0 <= hash18bit && hash18bit < (1<<18));
-		hash &= 0xfffc0000;
-		hash |= hash18bit;
+		uint32_t hashVal = hash.load(std::memory_order_acquire);
+		hashVal &= 0xfffc0000;
+		hashVal |= hash18bit;
+		hash.store(hashVal, std::memory_order_release);
 	}
 	
 	int GetFullKeyLen()
 	{
 		assert(IsNode());
-		return 1 + ((hash >> 24) & 7);
+		return 1 + ((hash.load(std::memory_order_acquire) >> 24) & 7);
 	}
 	
 	uint64_t GetFullKey()
 	{
 		assert(IsNode());
-		return minKey;
+		return minKey.load(std::memory_order_acquire);
 	}
 	
 	bool IsLeaf()
@@ -159,27 +164,29 @@ struct CuckooHashTableNode
 	bool IsUsingInternalChildMap()
 	{
 		assert(IsNode());
-		return ((hash >> 21) & 7) == 0;
+		return ((hash.load(std::memory_order_acquire) >> 21) & 7) == 0;
 	}
 	
 	bool IsExternalPointerBitMap()
 	{
 		assert(IsNode() && !IsUsingInternalChildMap());
-		return ((hash >> 21) & 7) == 4;
+		return ((hash.load(std::memory_order_acquire) >> 21) & 7) == 4;
 	}
 	
 	int GetChildNum()
 	{
 		assert(IsUsingInternalChildMap());
-		return 1 + ((hash >> 18) & 7);
+		return 1 + ((hash.load(std::memory_order_acquire) >> 18) & 7);
 	}
 	
 	void SetChildNum(int k)
 	{
 		assert(IsUsingInternalChildMap());
 		assert(1 <= k && k <= 8);
-		hash &= 0xffe3ffffU;
-		hash |= ((k-1) << 18); 
+		uint32_t hashVal = hash.load(std::memory_order_acquire);
+		hashVal &= 0xffe3ffffU;
+		hashVal |= ((k-1) << 18);
+		hash.store(hashVal, std::memory_order_release);
 	}
 	
 	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen);
@@ -280,13 +287,13 @@ public:
 			assert(IsValid());
 			if (h2 == nullptr || h1->IsEqual(expectedHash, shiftLen, shiftedKey))
 			{
-				return h1->minKey;
+				return h1->minKey.load(std::memory_order_acquire);
 			}
 			else
 			{
 				// Removed assert as its failing in the original implementation.
 				// assert(h1->IsEqual(expectedHash, shiftLen, shiftedKey));
-				return h2->minKey;
+				return h2->minKey.load(std::memory_order_acquire);
 			}
 		}
 

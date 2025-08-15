@@ -259,9 +259,9 @@ void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash1
 	generation.store(start_gen, std::memory_order_release);
 	assert(!IsOccupied());
 	assert(1 <= ilen && ilen <= 8 && 1 <= dlen && dlen <= 8 && -1 <= firstChild && firstChild <= 255);
-	hash = 0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit;
+	hash.store(0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit, std::memory_order_release);
 	minKey.store(dkey, std::memory_order_release);
-	childMap = firstChild;
+	childMap.store(firstChild, std::memory_order_release);
 }
 	
 int CuckooHashTableNode::FindNeighboringEmptySlot()
@@ -304,24 +304,24 @@ void CuckooHashTableNode::BitMapSet(int child)
 	assert(0 <= child && child <= 255);
 	if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap);
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
 		ptr[child / 64] |= uint64_t(1) << (child % 64);
 	}
 	else
 	{
 		if (child < 64)
 		{
-			childMap |= uint64_t(1) << child;
+			childMap.fetch_or(uint64_t(1) << child, std::memory_order_release);
 		}
 		else
 		{
 			if (child == 94 || child == 95)
 			{
-				hash |= 1 << (child - 76);
+				hash.fetch_or(1 << (child - 76), std::memory_order_release);
 			}
 			else
 			{
-				int offset = ((hash >> 21) & 7) - 4;
+				int offset = ((hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
 				uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
 				ptr[child / 64 - 1] |= uint64_t(1) << (child % 64);
 			}
@@ -339,22 +339,24 @@ uint64_t* CuckooHashTableNode::AllocateExternalBitMap()
 void CuckooHashTableNode::ExtendToBitMap()
 {
 	assert(IsNode() && !IsLeaf() && IsUsingInternalChildMap() && GetChildNum() == 8);
-	uint64_t children = childMap;
+	uint64_t children = childMap.load(std::memory_order_acquire);
 	int offset = FindNeighboringEmptySlot() + 4;
 	assert(1 <= offset && offset <= 7);
-	hash &= 0xff03ffffU;
-	hash |= (offset << 21);
+	uint32_t hashVal = hash.load(std::memory_order_acquire);
+	hashVal &= 0xff03ffffU;
+	hashVal |= (offset << 21);
+	hash.store(hashVal, std::memory_order_release);
 	if (offset == 4)
 	{
 		uint64_t* ptr = AllocateExternalBitMap();
-		childMap = reinterpret_cast<uintptr_t>(ptr);
+		childMap.store(reinterpret_cast<uintptr_t>(ptr), std::memory_order_release);
 	}
 	else
 	{
-		childMap = 0;
+		childMap.store(0, std::memory_order_release);
 		uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset-4]));
 		memset(ptr, 0, sizeof(CuckooHashTableNode));
-		this[offset-4].hash = 0xc0000000U;
+		this[offset-4].hash.store(0xc0000000U, std::memory_order_release);
 	}
 	
 	rep(i,0,7)
@@ -414,9 +416,9 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 	assert(0 <= child && child <= 255);
 	if (IsUsingInternalChildMap())
 	{
-		if (child == 0) { return childMap & 255; }
+		if (child == 0) { return childMap.load(std::memory_order_acquire) & 255; }
 		int k = GetChildNum();
-		__m64 z = _mm_cvtsi64_m64(childMap);
+		__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_acquire));
 		__m64 cmpTarget = _mm_set1_pi8(child - 1);
 		__m64 res = _mm_max_pu8(cmpTarget, z);
 		res = _mm_cmpeq_pi8(cmpTarget, res);
@@ -429,16 +431,16 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 		{ 
 			return -1; 
 		}
-		return (childMap >> ((pos-1)*8)) & 255;
+		return (childMap.load(std::memory_order_acquire) >> ((pos-1)*8)) & 255;
 	}
 	else if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap);
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
 		return Bitmap256LowerBound(ptr, child);
 	}
 	else
 	{
-		int offset = (hash >> 21) & 7;
+		int offset = (hash.load(std::memory_order_acquire) >> 21) & 7;
 		if (child < 64)
 		{
 			uint64_t x = childMap >> child;
@@ -448,7 +450,7 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 			}
 			uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset-4]));
 			x = ptr[0] & 0xffffffff3fffffffULL;
-			x |= uint64_t((hash >> 18) & 3) << 30;
+			x |= uint64_t((hash.load(std::memory_order_acquire) >> 18) & 3) << 30;
 			if (x)
 			{
 				return __builtin_ctzll(x) + 64;
@@ -466,7 +468,7 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 		{
 			uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset-4]));
 			uint64_t x = ptr[0] & 0xffffffff3fffffffULL;
-			x |= uint64_t((hash >> 18) & 3) << 30;
+			x |= uint64_t((hash.load(std::memory_order_acquire) >> 18) & 3) << 30;
 			x >>= (child - 64);
 			if (x)
 			{
@@ -509,7 +511,7 @@ bool CuckooHashTableNode::ExistChild(int child)
 	if (IsUsingInternalChildMap())
 	{
 		int k = GetChildNum();
-		__m64 z = _mm_cvtsi64_m64(childMap);
+		__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_acquire));
 		__m64 cmpTarget = _mm_set1_pi8(child);
 		__m64 res = _mm_cmpeq_pi8(cmpTarget, z);
 		int msk = _mm_movemask_pi8(res);
@@ -518,7 +520,7 @@ bool CuckooHashTableNode::ExistChild(int child)
 		
 #ifndef NDEBUG
 		bool bruteForceResult = false;
-		uint64_t c = childMap;
+		uint64_t c = childMap.load(std::memory_order_acquire);
 		rep(i,0,k-1)
 		{
 			int x = c & 255;
@@ -531,22 +533,22 @@ bool CuckooHashTableNode::ExistChild(int child)
 	}
 	else if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap);
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
 		return (ptr[child / 64] & (uint64_t(1) << (child % 64))) != 0;
 	}
 	else
 	{
 		if (child < 64)
 		{
-			return (childMap & (uint64_t(1) << child)) != 0;
+			return (childMap.load(std::memory_order_acquire) & (uint64_t(1) << child)) != 0;
 		}
 		else if (unlikely(child == 94 || child == 95))
 		{
-			return (hash & (1 << (child - 76))) != 0;
+			return (hash.load(std::memory_order_acquire) & (1 << (child - 76))) != 0;
 		}
 		else
 		{
-			int offset = ((hash >> 21) & 7) - 4;
+			int offset = ((hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
 			uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
 			return (ptr[child / 64 - 1] & (uint64_t(1) << (child % 64))) != 0;
 		}
@@ -564,7 +566,7 @@ void CuckooHashTableNode::AddChild(int child)
 		if (likely(k < 8))
 		{
 			SetChildNum(k+1);
-			__m64 z = _mm_cvtsi64_m64(childMap);
+			__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_acquire));
 			__m64 cmpTarget = _mm_set1_pi8(child);
 			__m64 res = _mm_max_pu8(cmpTarget, z);
 			res = _mm_cmpeq_pi8(cmpTarget, res);
@@ -573,11 +575,11 @@ void CuckooHashTableNode::AddChild(int child)
 			msk++;
 			int pos = __builtin_ffs(msk);
 			assert(1 <= pos && pos <= k + 1);
-			uint64_t larger = (pos == 8) ? 0 : (childMap >> ((pos-1)*8) << (pos*8));
-			uint64_t smaller = childMap & ((uint64_t(1) << ((pos-1)*8)) - 1);
-			childMap = smaller | (uint64_t(child) << ((pos - 1)*8)) | larger;
+			uint64_t larger = (pos == 8) ? 0 : (childMap.load(std::memory_order_acquire) >> ((pos-1)*8) << (pos*8));
+			uint64_t smaller = childMap.load(std::memory_order_acquire) & ((uint64_t(1) << ((pos-1)*8)) - 1);
+			childMap.store(smaller | (uint64_t(child) << ((pos - 1)*8)) | larger, std::memory_order_release);
 #ifndef NDEBUG
-			uint64_t tmp = childMap;
+			uint64_t tmp = childMap.load(std::memory_order_acquire);
 			int last = tmp % 256;
 			rep(i, 1, k)
 			{
@@ -605,7 +607,7 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 	vector<int> ret;
 	if (IsUsingInternalChildMap())
 	{
-		uint64_t c = childMap;
+		uint64_t c = childMap.load(std::memory_order_acquire);
 		int k = GetChildNum();
 		rep(i,0,k-1)
 		{
@@ -619,7 +621,7 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 	}
 	else if (unlikely(IsExternalPointerBitMap()))
 	{
-		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap);
+		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load(std::memory_order_acquire));
 		rep(i,0,255)
 		{
 			if (ptr[i/64] & (uint64_t(1) << (i%64)))
@@ -632,12 +634,12 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 	{
 		rep(i,0,63)
 		{
-			if (childMap & (uint64_t(1) << i))
+			if (childMap.load(std::memory_order_acquire) & (uint64_t(1) << i))
 			{
 				ret.push_back(i);
 			}
 		}
-		int offset = ((hash >> 21) & 7) - 4;
+		int offset = ((hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
 		uint64_t* ptr = reinterpret_cast<uint64_t*>(&(this[offset]));
 		rep(i, 64, 93)
 		{
@@ -648,7 +650,7 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 		}
 		rep(i, 94, 95)
 		{
-			if (hash & (1 << (i - 76)))
+			if (hash.load(std::memory_order_acquire) & (1 << (i - 76)))
 			{
 				ret.push_back(i);
 			}
@@ -668,11 +670,11 @@ uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 {
 	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap() && !IsExternalPointerBitMap());
 	uint64_t* ptr = AllocateExternalBitMap();
-	int offset = (hash >> 21) & 7;
-	ptr[0] = childMap;
+	int offset = (hash.load(std::memory_order_acquire) >> 21) & 7;
+	ptr[0] = childMap.load(std::memory_order_acquire);
 	memcpy(ptr+1, &(this[offset-4]), sizeof(CuckooHashTableNode));
 	ptr[1] &= 0xffffffff3fffffffULL;
-	ptr[1] |= uint64_t((hash >> 18) & 3) << 30;
+	ptr[1] |= uint64_t((hash.load(std::memory_order_acquire) >> 18) & 3) << 30;
 	return ptr;
 }
 	
@@ -682,13 +684,15 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
     target->CopyWithoutGeneration(*this);
 	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
 	{
-		memset(this, 0, sizeof(CuckooHashTableNode));
+		hash.store(0, std::memory_order_release);
 		return;
 	}
-	int offset = (hash >> 21) & 7;
+	int offset = (hash.load(std::memory_order_acquire) >> 21) & 7;
 	int targetOffset = target->FindNeighboringEmptySlot() + 4;
-	target->hash &= 0xff1fffffU;
-	target->hash |= (targetOffset << 21);
+	uint32_t targetHashVal = target->hash.load(std::memory_order_acquire);
+	targetHashVal &= 0xff1fffffU;
+	targetHashVal |= (targetOffset << 21);
+	target->hash.store(targetHashVal, std::memory_order_release);
 	if (targetOffset != 4)
 	{
 		memcpy(&(target[targetOffset-4]), &(this[offset-4]), sizeof(CuckooHashTableNode));
@@ -696,7 +700,7 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 	else
 	{
 		uint64_t* ptr = CopyToExternalBitMap();
-		target->childMap = reinterpret_cast<uint64_t>(ptr);
+		target->childMap.store(reinterpret_cast<uint64_t>(ptr), std::memory_order_release);
 	}
 	memset(this, 0, sizeof(CuckooHashTableNode));
 	memset(&(this[offset-4]), 0, sizeof(CuckooHashTableNode));
@@ -704,7 +708,7 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 	assert(target->IsNode());
 	if (!target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
 	{
-		int o = (target->hash >> 21) & 7;
+		int o = (target->hash.load(std::memory_order_acquire) >> 21) & 7;
 		assert(target[o-4].IsOccupied() && !target[o-4].IsNode());
 	}
 #endif
@@ -713,23 +717,25 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 void CuckooHashTableNode::RelocateBitMap()
 {
 	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap() && !IsExternalPointerBitMap());
-	uint64_t children = childMap;
+	uint64_t children = childMap.load(std::memory_order_acquire);
 	int offset = FindNeighboringEmptySlot() + 4;
 	assert(1 <= offset && offset <= 7);
-	int oldOffset = (hash >> 21) & 7;
+	int oldOffset = (hash.load(std::memory_order_acquire) >> 21) & 7;
 	assert(offset != oldOffset);
 	if (offset == 4)
 	{
 		uint64_t* ptr = CopyToExternalBitMap();
-		childMap = reinterpret_cast<uint64_t>(ptr);
+		childMap.store(reinterpret_cast<uint64_t>(ptr), std::memory_order_release);
 	}
 	else
 	{
 		memcpy(&(this[offset-4]), &(this[oldOffset-4]), sizeof(CuckooHashTableNode));
 	}
 	memset(&(this[oldOffset-4]), 0, sizeof(CuckooHashTableNode));
-	hash &= 0xfff1fffffU;
-	hash |= offset << 21;
+	uint32_t hashVal = hash.load(std::memory_order_acquire);
+	hashVal &= 0xfff1fffffU;
+	hashVal |= offset << 21;
+	hash.store(hashVal, std::memory_order_release);
 	assert(offset == 4 || (this[offset-4].IsOccupied() && !this[offset-4].IsNode()));
 }	
 
@@ -990,7 +996,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 
 	for (; len >= 2; len --)
 	{
-		if ((ht[allPositions1[len]].hash & 0xf803ffffU) == expectedHash[len]) 
+		if ((ht[allPositions1[len]].hash.load(std::memory_order_acquire) & 0xf803ffffU) == expectedHash[len]) 
 		{
 			if (ht[allPositions1[len]].generation.load(std::memory_order_acquire) > generation)
 			{
@@ -998,7 +1004,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 			}
 			break;
 		}
-		if ((ht[allPositions2[len]].hash & 0xf803ffffU) == expectedHash[len])
+		if ((ht[allPositions2[len]].hash.load(std::memory_order_acquire) & 0xf803ffffU) == expectedHash[len])
 		{
 			if (ht[allPositions2[len]].generation.load(std::memory_order_acquire) > generation)
 			{
@@ -1025,7 +1031,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 		uint32_t hash18bit = XXH::XXHashFn3(key, len + 1);
 		hash18bit = hash18bit & ((1<<18) - 1);
 		uint32_t expectedx = hash18bit | (len << 27) | 0x80000000U;
-		assert((ht[allPositions1[len]].hash & 0xf803ffffU) == expectedx);
+		assert((ht[allPositions1[len]].hash.load(std::memory_order_acquire) & 0xf803ffffU) == expectedx);
 	}
 #endif
 
@@ -1132,7 +1138,7 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 			CuckooHashTableNode* target = &ht[victimPosition + i];
 			if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
 			{
-				int offset = ((target->hash >> 21) & 7) - 4;
+				int offset = ((target->hash.load(std::memory_order_acquire) >> 21) & 7) - 4;
 				if (offset + i == 0)
 				{
 					owner = target;
@@ -1340,10 +1346,10 @@ bool MlpSet::Insert(uint64_t value)
 				//
 				m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_release);
 				m_hashTable.ht[pos].AddChild((value >> (56 - lcpLen * 8)) % 256);
-				if (value < m_hashTable.ht[pos].minKey)
+				if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
 				{
 					minKeyUpdated = true;
-					m_hashTable.ht[pos].minKey = value;
+					m_hashTable.ht[pos].minKey.store(value, std::memory_order_release);
 				}
 			}
 			else
@@ -1355,7 +1361,7 @@ bool MlpSet::Insert(uint64_t value)
 				//     only two children (corresponding byte of ht[pos].minKey and value)
 				//     Now ht[pos] becomes the splitting point
 				//
-				uint64_t minKey = m_hashTable.ht[pos].minKey;
+				uint64_t minKey = m_hashTable.ht[pos].minKey.load(std::memory_order_acquire);
 				uint32_t oldHash18bit = m_hashTable.ht[pos].GetHash18bit();
 #ifndef NDEBUG
 				vector<int> oldChildList = m_hashTable.ht[pos].GetAllChildren();
@@ -1415,7 +1421,7 @@ bool MlpSet::Insert(uint64_t value)
 					assert(found);
 					assert(m_hashTable.ht[x].GetIndexKeyLen() == ilen);
 					assert(m_hashTable.ht[x].GetFullKeyLen() == lcpLen);
-					assert(m_hashTable.ht[x].minKey == min(value, minKey));
+					assert(m_hashTable.ht[x].minKey.load(std::memory_order_acquire) == min(value, minKey));
 					vector<int> ch = m_hashTable.ht[x].GetAllChildren();
 					assert(ch.size() == 2);
 					int expectedChild1 = (value >> (56 - lcpLen * 8)) % 256;
@@ -1432,7 +1438,7 @@ bool MlpSet::Insert(uint64_t value)
 					assert(found);
 					assert(m_hashTable.ht[x].GetIndexKeyLen() == lcpLen + 1);
 					assert(m_hashTable.ht[x].GetFullKeyLen() == oldFullKeyLen);
-					assert(m_hashTable.ht[x].minKey == minKey);
+					assert(m_hashTable.ht[x].minKey.load(std::memory_order_acquire) == minKey);
 					vector<int> ch = m_hashTable.ht[x].GetAllChildren();
 					assert(ch.size() == oldChildList.size());
 					rep(i, 0, int(ch.size()) - 1)
@@ -1456,10 +1462,10 @@ bool MlpSet::Insert(uint64_t value)
 					if (m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
 					{
 						assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
-						if (value < m_hashTable.ht[pos].minKey)
+						if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
 						{
 							m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_release);
-							m_hashTable.ht[pos].minKey = value;
+							m_hashTable.ht[pos].minKey.store(value, std::memory_order_release);
 						}
 						else
 						{
@@ -1476,10 +1482,10 @@ bool MlpSet::Insert(uint64_t value)
 						if (m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
 						{
 							assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
-							if (value < m_hashTable.ht[pos].minKey)
+							if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
 							{
 								m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_release);
-								m_hashTable.ht[pos].minKey = value;
+								m_hashTable.ht[pos].minKey.store(value, std::memory_order_release);
 							}
 							else
 							{
@@ -1620,7 +1626,7 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			// path compression string does not match
 			// either the given value is smaller than the whole subtree, or larger than the whole subtree
 			//
-			if (value < m_hashTable.ht[pos].minKey)
+			if (value < m_hashTable.ht[pos].minKey.load(std::memory_order_acquire))
 			{
 				if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_acquire))
 				{
@@ -1657,7 +1663,7 @@ _parent:
 				{
 					assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 					int dlen = m_hashTable.ht[pos].GetFullKeyLen();
-					assert((m_hashTable.ht[pos].minKey >> (64 - dlen * 8)) == (value >> (64 - dlen * 8)));
+					assert((m_hashTable.ht[pos].minKey.load(std::memory_order_acquire) >> (64 - dlen * 8)) == (value >> (64 - dlen * 8)));
 					uint32_t child = (value >> (56 - dlen * 8)) & 255;
 					if (child < 255)
 					{
@@ -1691,7 +1697,7 @@ _flat_mapping:
 	uint64_t high24bits = value >> 40;
 	if ((high24bits & 255) < 255)
 	{
-		int lv2LbChild = Bitmap256LowerBound(m_treeDepth2 + (high24bits >> 8) * 4, (high24bits & 255) + 1);
+		int lv2LbChild = Bitmap256LowerBound((std::atomic<uint64_t>*)(m_treeDepth2 + (high24bits >> 8) * 4), (high24bits & 255) + 1);
 		if (lv2LbChild != -1)
 		{
 			uint64_t keyToFind = ((high24bits >> 8) << 48) | (uint64_t(lv2LbChild) << 40);
@@ -1705,11 +1711,11 @@ _flat_mapping:
 #endif
 	if (((high24bits >> 8) & 255) < 255)
 	{
-		int lv1LbChild = Bitmap256LowerBound(m_treeDepth1 + (high24bits >> 16) * 4, ((high24bits >> 8) & 255) + 1);
+		int lv1LbChild = Bitmap256LowerBound((std::atomic<uint64_t>*)(m_treeDepth1 + (high24bits >> 16) * 4), ((high24bits >> 8) & 255) + 1);
 		if (lv1LbChild != -1)
 		{
 			uint64_t high16bits = ((high24bits >> 16) << 8) | lv1LbChild;
-			int lv2FirstChild = Bitmap256LowerBound(m_treeDepth2 + high16bits * 4, 0 /*child*/);
+			int lv2FirstChild = Bitmap256LowerBound((std::atomic<uint64_t>*)(m_treeDepth2 + high16bits * 4), 0 /*child*/);
 			assert(lv2FirstChild != -1);
 			uint64_t keyToFind = (high16bits << 48) | (uint64_t(lv2FirstChild) << 40);
 			return m_hashTable.GetLookupMustExistPromise(3, keyToFind);
@@ -1722,13 +1728,13 @@ _flat_mapping:
 #endif
 	if ((high24bits >> 16) < 255)
 	{
-		int lv0LbChild = Bitmap256LowerBound(m_root, (high24bits >> 16) + 1);
+		int lv0LbChild = Bitmap256LowerBound((std::atomic<uint64_t>*)m_root, (high24bits >> 16) + 1);
 		if (lv0LbChild != -1)
 		{
-			int lv1FirstChild = Bitmap256LowerBound(m_treeDepth1 + lv0LbChild * 4, 0 /*child*/);
+			int lv1FirstChild = Bitmap256LowerBound((std::atomic<uint64_t>*)(m_treeDepth1 + lv0LbChild * 4), 0 /*child*/);
 			assert(lv1FirstChild != -1);
 			uint64_t high16bits = (lv0LbChild << 8) | lv1FirstChild;
-			int lv2FirstChild = Bitmap256LowerBound(m_treeDepth2 + high16bits * 4, 0 /*child*/);
+			int lv2FirstChild = Bitmap256LowerBound((std::atomic<uint64_t>*)(m_treeDepth2 + high16bits * 4), 0 /*child*/);
 			assert(lv2FirstChild != -1);
 			uint64_t keyToFind = (high16bits << 48) | (uint64_t(lv2FirstChild) << 40);
 			return m_hashTable.GetLookupMustExistPromise(3, keyToFind);
@@ -1766,6 +1772,8 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 			uint64_t result = p.Resolve();
 			if (p.IsGenerationValid(cur_generation.load(std::memory_order_acquire))) {
 				return result;
+			} else {
+			    std::cout << "LowerBound failed: generation mismatch" << std::endl;
 			}
 		}
 		// DEBUG("LowerBound failed");
