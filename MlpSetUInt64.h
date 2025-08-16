@@ -12,6 +12,9 @@ static std::mutex debug_print_mutex;
 
 // #define TRACE
 
+#define NUM_CHILDREN(generation) ((generation >> 24) & 0xff)
+#define SET_NUM_CHILDREN(generation, k) (generation.store((generation.load(std::memory_order_seq_cst) & 0x00ffffff) | (k << 24), std::memory_order_seq_cst))
+
 #ifndef TRACE
 #define DEBUG(msg)
 #else
@@ -28,6 +31,7 @@ static std::mutex debug_print_mutex;
     	                         << " - " << msg << std::endl; \
 					} while(0)
 #endif
+#include <optional>
 
 namespace MlpSetUInt64
 {
@@ -66,6 +70,7 @@ struct CuckooHashTableNode
 	//
 	std::atomic<uint32_t> hash;	
 	// points to min node in this subtree - UNUSED in the original implementation
+	// generation first byte is used for num of children, second byte for generation.
 	std::atomic<uint32_t> generation;
 	// the min node's full key
 	// the first indexLen bytes prefix is this node's index into the hash table
@@ -89,6 +94,14 @@ struct CuckooHashTableNode
 	}
 
 	
+	void Clear()
+	{
+		hash.store(0, std::memory_order_seq_cst);
+		generation.store(0, std::memory_order_seq_cst);
+		minKey.store(0, std::memory_order_seq_cst);
+		childMap.store(0, std::memory_order_seq_cst);
+	}
+
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)
 	{
 		return ((hash.load(std::memory_order_seq_cst) & 0xf803ffffU) == expectedHash) && (minKey.load(std::memory_order_seq_cst) >> shiftLen == shiftedKey);
@@ -198,25 +211,32 @@ struct CuckooHashTableNode
 	
 	int GetChildNum()
 	{
-		assert(IsUsingInternalChildMap());
-		return 1 + ((hash.load(std::memory_order_seq_cst) >> 18) & 7);
+		if (NUM_CHILDREN(generation.load(std::memory_order_seq_cst)) <= 8)
+		{
+			return 1 + ((hash.load(std::memory_order_seq_cst) >> 18) & 7);
+		}
+
+		return NUM_CHILDREN(generation.load(std::memory_order_seq_cst));
 	}
 	
 	void SetChildNum(int k)
 	{
-		assert(IsUsingInternalChildMap());
-		assert(1 <= k && k <= 8);
-		uint32_t hashVal = hash.load(std::memory_order_seq_cst);
-		hashVal &= 0xffe3ffffU;
-		hashVal |= ((k-1) << 18);
-		hash.store(hashVal, std::memory_order_seq_cst);
+		if (k <= 8)
+		{
+			uint32_t hashVal = hash.load(std::memory_order_seq_cst);
+			hashVal &= 0xffe3ffffU;
+			hashVal |= ((k-1) << 18);
+			hash.store(hashVal, std::memory_order_seq_cst);
+		}
+
+		SET_NUM_CHILDREN(generation, k);
 	}
 	
 	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen);
 	
 	int FindNeighboringEmptySlot();
 	
-	void BitMapSet(int child);
+	void BitMapSet(int child, bool on=true);
 	
 	// TODO: free external bitmap memory when hash table is destroyed
 	//
@@ -238,6 +258,11 @@ struct CuckooHashTableNode
 	// Add a new child, must not exist
 	//
 	void AddChild(int child, uint32_t generation);
+
+	void RevertToInternalBitmap();
+
+	// Remove a child, must exist
+	void RemoveChild(int child);
 
 	// for debug only, get list of all children in sorted order
 	//
@@ -314,8 +339,6 @@ public:
 			}
 			else
 			{
-				// Removed assert as its failing in the original implementation.
-				// assert(h1->IsEqual(expectedHash, shiftLen, shiftedKey));
 				return h2->minKey.load(std::memory_order_seq_cst);
 			}
 		}
@@ -358,6 +381,10 @@ public:
 	// Single point lookup, returns index in hash table if found
 	//
 	uint32_t Lookup(int ilen, uint64_t ikey, bool& found);
+
+	// Removes a node from the hash table
+	// Returns true if the node is removed, false if it does not exist
+	bool Remove(int ilen, uint64_t key);
 
 	// Single point lookup on a key that is supposed to exist
 	//
@@ -467,6 +494,12 @@ public:
 
 private:
 	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation);
+
+	void ClearL1Cache(uint64_t value, std::optional<uint64_t> successor);
+
+	void ClearL2Cache(uint64_t value, std::optional<uint64_t> successor);
+
+	std::optional<uint64_t> ClearL1AndL2Caches(uint64_t value);
 	
 	// we mmap memory all at once, hold the pointer to the memory chunk
 	// TODO: this needs to changed after we support hash table resizing 

@@ -1129,6 +1129,38 @@ TEST(MlpSetUInt64, WorkloadC_80M_Dep)
 	printf("Finished %d queries %d positives\n", int(workload.numOperations), int(sum));
 }
 
+TEST(MlpSetUInt64, MlpSetRemoveSingleThreaded)
+{
+	MlpSetUInt64::MlpSet s;
+    s.Init(4194304);
+	uint64_t insertionSetSize = 65537; // some prime number
+
+	printf("Inserting %llu elements..\n", insertionSetSize);
+    for (uint64_t i = 0; i < insertionSetSize; i++)
+    {
+		s.Insert(i);
+		// sanity
+		ReleaseAssert(s.Exist(i));
+    }
+
+    // add another node which will make the tree structure more complex
+    s.Insert(insertionSetSize | (1ULL << 24));
+
+    // generate a "random" order of values to remove
+    std::vector<uint64_t> values;
+    for (size_t x = 0; x < insertionSetSize; x++)
+    {
+        uint64_t value = (3 * x + 1) % insertionSetSize;
+        values.push_back(value);
+    }
+
+    for (uint64_t i: values)
+    {
+		s.Remove(i);
+		ReleaseAssert(!s.Exist(i));
+    }
+}
+
 TEST(MlpSetUInt64, WorkloadD_16M_Dep)
 {
 	printf("Generating workload WorkloadD 16M ENFORCE dep..\n");

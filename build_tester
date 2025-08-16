@@ -1,1 +1,1 @@
-g++ MlpSetUInt64.cpp tester.cpp -o tester -Wno-attributes -msse4.1
+g++ -g MlpSetUInt64.cpp tester.cpp -o tester -Wno-attributes -msse4.1
