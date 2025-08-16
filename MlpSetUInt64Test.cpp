@@ -7,6 +7,8 @@
 #include "WorkloadC.h"
 #include "WorkloadD.h"
 #include "gtest/gtest.h"
+#include <random>
+#include <fstream>
 
 namespace {
 
@@ -20,7 +22,7 @@ TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
 	void* allocatedPtr = mmap(NULL, 
 		                      allocatedArrLen, 
 		                      PROT_READ | PROT_WRITE, 
-		                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, 
+		                      MAP_PRIVATE | MAP_ANONYMOUS,
 		                      -1 /*fd*/, 
 		                      0 /*offset*/);
 	ReleaseAssert(allocatedPtr != MAP_FAILED);
@@ -1158,6 +1160,149 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreaded)
 		s.Remove(i);
 		ReleaseAssert(!s.Exist(i));
     }
+}
+
+void write_to_file(const std::vector<uint64_t>& numbers, const char* filename)
+{
+    // Open the file in binary mode for writing. std::ios::binary prevents text-mode translations.
+    std::ofstream output_file(filename, std::ios::out | std::ios::binary);
+
+    // Check if the file was opened successfully.
+    if (!output_file.is_open()) {
+        std::cerr << "Error: Could not open file " << filename << " for writing." << std::endl;
+        return;
+    }
+
+    // Write the entire vector's content to the file in a single operation.
+    // random_numbers.data() gets a pointer to the raw data buffer.
+    // random_numbers.size() * sizeof(unsigned long long) gives the total size in bytes.
+    output_file.write(reinterpret_cast<const char*>(numbers.data()),
+					  numbers.size() * sizeof(unsigned long long));
+
+    // Close the file stream.
+    output_file.close();
+}
+
+std::vector<uint64_t> read_from_file(const char* filename)
+{
+    std::ifstream input_file(filename, std::ios::in | std::ios::binary | std::ios::ate);
+
+    if (!input_file.is_open()) {
+        return {};
+    }
+    // Get the size of the file in bytes.
+    std::streampos file_size_bytes = input_file.tellg();
+
+    // Calculate the number of uint64_t elements.
+    size_t num_elements = file_size_bytes / sizeof(unsigned long long);
+
+	std::vector<uint64_t> numbers;
+	numbers.resize(num_elements);
+
+	input_file.seekg(0, std::ios::beg);
+
+	input_file.read(reinterpret_cast<char*>(numbers.data()),
+					num_elements * sizeof(unsigned long long));
+
+	long long bytes_read = input_file.gcount();
+	assert(bytes_read == file_size_bytes);
+
+    input_file.close();
+
+	return numbers;
+}
+
+void generate_input(std::vector<uint64_t>& insertions, std::vector<uint64_t>& removals)
+{
+	insertions = read_from_file("insertion_order.dat");
+	removals = read_from_file("removal_order.dat");
+	if (!insertions.empty() && !removals.empty())
+	{
+		return;
+	}
+
+	// A C++ standard library class for obtaining true random numbers from the operating system.
+    // This is used to seed our random number generator.
+    std::random_device rd;
+
+    // A 64-bit Mersenne Twister pseudo-random number generator engine.
+    // It's the standard for high-quality random number generation in modern C++.
+    // We seed it with a value from std::random_device to ensure a unique sequence each time.
+    std::mt19937_64 gen(rd());
+
+    // A uniform integer distribution that generates numbers in the range [0, 2^64-1].
+    // The 'unsigned long long' type is a 64-bit integer, which is necessary for this range.
+    // By default, it generates numbers in the full range of its template parameter.
+    std::uniform_int_distribution<uint64_t> distrib;
+
+    const int num_to_generate = 5000;
+    insertions.reserve(num_to_generate); // Reserve memory for efficiency
+
+    // Generate 100,000 random numbers and store them in the vector.
+    for (int i = 0; i < num_to_generate; ++i) {
+        // Call the distribution object with the generator engine to get a random number.
+        insertions.push_back(distrib(gen) % 20000);
+    }
+
+	// remove duplicates
+	auto random_unique_numbers = std::set<uint64_t>(insertions.begin(), insertions.end());
+	insertions = std::vector<uint64_t>(random_unique_numbers.begin(), random_unique_numbers.end());
+
+	write_to_file(insertions, "insertion_order.dat");
+
+    // Print the generated numbers to the console.
+    std::cout << "Generated " << insertions.size() << " random 64-bit numbers:" << std::endl;
+
+	removals = std::vector<uint64_t>(insertions);
+
+	std::shuffle(removals.begin(), removals.end(), gen);
+
+	write_to_file(removals, "removal_order.dat");
+}
+
+TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
+{
+	std::vector<uint64_t> insertions, removals;
+	generate_input(insertions, removals);
+
+	MlpSetUInt64::MlpSet s;
+    s.Init(4194304);
+	
+	for (uint64_t num : insertions)
+	{
+		s.Insert(num);
+	}
+	
+	for (size_t i = 0; i < removals.size(); i++)
+	{
+		uint64_t num = removals[i];
+		bool successor_should_be_found = false;
+		uint64_t successor = 0xffffffffffffffffULL;
+		for (size_t j = i + 1; j < removals.size(); j++)
+		{
+			if (removals[j] > num && successor > removals[j])
+			{
+				successor_should_be_found = true;
+				successor = removals[j];
+			}
+		}
+		bool found;
+		uint64_t found_successor = s.LowerBound(num + 1, found);
+		assert(found == successor_should_be_found);
+		if (found)
+		{
+			assert(found_successor == successor);
+		}
+
+		s.Remove(num);
+		ReleaseAssert(!s.Exist(num));
+	}
+	
+	for (uint64_t num: removals)
+	{
+		s.Remove(num);
+		ReleaseAssert(!s.Exist(num));
+	}
 }
 
 TEST(MlpSetUInt64, WorkloadD_16M_Dep)
