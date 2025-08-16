@@ -1560,10 +1560,6 @@ _end:
 		m_treeDepth2[(value >> 40) / 64].fetch_or(depth2Bit, std::memory_order_seq_cst);
 	}
 
-	// Memory fence to ensure all writes are visible to readers before updating generation
-	std::atomic_thread_fence(std::memory_order_seq_cst);
-	
-	// Update generation after fence to ensure readers see consistent state
 	cur_generation.store(cur_gen, std::memory_order_seq_cst);
 	
 	return true;
