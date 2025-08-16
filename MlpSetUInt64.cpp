@@ -562,7 +562,7 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 			}
 		}
 		childMap = tmpChildMap;
-		return;
+		goto _leave;
 	}
 
 	for (int i = 255; i >= 64; i--)
@@ -599,6 +599,7 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 	
 	childMap = tmpChildMap;
 
+_leave:
 	hash &= ~(7 << 21); // mark the node as using internal child map
 }
 
