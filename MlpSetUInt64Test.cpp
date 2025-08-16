@@ -371,6 +371,7 @@ TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 	
 	printf("Executing queries..\n");
 	{
+		std::atomic<uint32_t> cur_generation;
 		AutoTimer timer;
 		rep(i,0,numQueries - 1)
 		{
@@ -383,7 +384,8 @@ TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 			                         ilen /*out*/, 
 			                         allPositions1 /*out*/, 
 			                         allPositions2 /*out*/, 
-			                         expectedHash /*out*/);
+			                         expectedHash /*out*/,
+									 cur_generation /*generation*/);
 			actualAnswers[i].first = lcpLen;
 			if (lcpLen == 2)
 			{

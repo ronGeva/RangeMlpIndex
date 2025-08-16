@@ -36,10 +36,6 @@ static std::mutex debug_print_mutex;
 namespace MlpSetUInt64
 {
 
-// Single writer implies no need for atomic operation. On the other hand using atomic we,
-// can reduce amount of times we see an old generation which may cause more restarts, might be worth to try both atomic and non-atomic
-static std::atomic<uint32_t> cur_generation;
-
 
 // Displacement can't be protected by generation.
 static std::shared_mutex displacement_mutex;
@@ -411,7 +407,8 @@ public:
                  uint32_t& idxLen, 
                  uint32_t* allPositions1, 
                  uint32_t* allPositions2, 
-                 uint32_t* expectedHash);
+                 uint32_t* expectedHash,
+				 std::atomic<uint32_t>& cur_generation);
 	
 	// hash table array pointer
 	//
@@ -437,7 +434,12 @@ private:
 
 class MlpSet
 {
+
 public:
+// Single writer implies no need for atomic operation. On the other hand using atomic we,
+// can reduce amount of times we see an old generation which may cause more restarts, might be worth to try both atomic and non-atomic
+std::atomic<uint32_t> cur_generation;
+
 #ifdef ENABLE_STATS
 	struct Stats
 	{

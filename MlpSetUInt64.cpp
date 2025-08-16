@@ -1104,7 +1104,8 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
                                             uint32_t& idxLen, 
                                             uint32_t* allPositions1, 
                                             uint32_t* allPositions2, 
-                                            uint32_t* expectedHash)
+                                            uint32_t* expectedHash,
+											std::atomic<uint32_t>& cur_generation)
 {
 	while (true)
 	{
@@ -1857,7 +1858,8 @@ bool MlpSet::Exist(uint64_t value)
 		                              ilen /*out*/, 
 		                              allPositions1 /*out*/, 
 		                              allPositions2 /*out*/, 
-		                              expectedHash /*out*/);
+		                              expectedHash /*out*/,
+									  cur_generation /*generation*/);
 	if (lcpLen != 8) {
 		DEBUG("lcpLen=" << lcpLen << " value=" << value);
 	}
