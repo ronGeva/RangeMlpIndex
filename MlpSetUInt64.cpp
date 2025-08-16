@@ -1424,9 +1424,10 @@ bool MlpSet::Remove(uint64_t value)
 			m_hashTable.ht[pos].minKey = *opt_successor;
 		}
 
-		if (remove_child)
+		const int child = (value >> (64 - 8 * remove_child_offset)) % 256;
+		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
 		{
-			m_hashTable.ht[pos].RemoveChild((value >> (64 - 8 * remove_child_offset)) % 256);
+			m_hashTable.ht[pos].RemoveChild(child);
 			remove_child = false;
 		}
 
