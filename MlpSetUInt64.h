@@ -68,7 +68,7 @@ struct CuckooHashTableNode
 	// 3 bit: # of childs if using internal map, 0 + bitmap's highest 2 bits if using external bitmap
 	// 18 bit: hash 
 	//
-	std::atomic<uint32_t> hash;	
+	uint32_t hash;	
 	// points to min node in this subtree - UNUSED in the original implementation
 	// generation first byte is used for num of children, second byte for generation.
 	std::atomic<uint32_t> generation;
@@ -77,7 +77,7 @@ struct CuckooHashTableNode
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
 	// the whole minKey is the min node's key
 	//
-	std::atomic<uint64_t> minKey;
+	uint64_t minKey;
 	// the child map
 	// when using internal map, each byte stores a child
 	// when using external bitmap, each bit represent whether the corresponding child exists
@@ -88,33 +88,33 @@ struct CuckooHashTableNode
 
 	// Copy fields from another node in a way that works with std::atomic
 	void CopyWithoutGeneration(const CuckooHashTableNode& other) {
-		hash.store(other.hash.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
-		minKey.store(other.minKey.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		hash = other.hash;
+		minKey = other.minKey;
 		childMap.store(other.childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
 	}
 
 	
 	void Clear()
 	{
-		hash.store(0, std::memory_order_seq_cst);
+		hash = 0;
 		generation.store(0, std::memory_order_seq_cst);
-		minKey.store(0, std::memory_order_seq_cst);
+		minKey = 0;
 		childMap.store(0, std::memory_order_seq_cst);
 	}
 
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)
 	{
-		return ((hash.load(std::memory_order_seq_cst) & 0xf803ffffU) == expectedHash) && (minKey.load(std::memory_order_seq_cst) >> shiftLen == shiftedKey);
+		return ((hash & 0xf803ffffU) == expectedHash) && (minKey >> shiftLen == shiftedKey);
 	}
 	
 	bool IsEqualNoHash(uint64_t key, int len)
 	{
-		return ((hash.load(std::memory_order_seq_cst) & 0xf8000000U) == (0x80000000U | uint32_t(((len) - 1) << 27)) && (key >> (64-8*len)) == (minKey.load(std::memory_order_seq_cst) >> (64-8*len)));
+		return ((hash & 0xf8000000U) == (0x80000000U | uint32_t(((len) - 1) << 27)) && (key >> (64-8*len)) == (minKey >> (64-8*len)));
 	}
 	
 	int GetOccupyFlag()
 	{
-		uint32_t hashVal = hash.load(std::memory_order_seq_cst);
+		uint32_t hashVal = hash;
 		assert((hashVal >> 30) != 1);
 		return hashVal >> 30;
 	}
@@ -140,20 +140,20 @@ struct CuckooHashTableNode
 	uint32_t GetHash18bit()
 	{
 		assert(IsNode());
-		return hash.load(std::memory_order_seq_cst) & ((1 << 18) - 1);
+		return hash & ((1 << 18) - 1);
 	}
 	
 	int GetIndexKeyLen()
 	{
 		assert(IsNode());
-		return 1 + ((hash.load(std::memory_order_seq_cst) >> 27) & 7);
+		return 1 + ((hash >> 27) & 7);
 	}
 	
 	uint64_t GetIndexKey()
 	{
 		assert(IsNode());
 		int shiftLen = 64 - GetIndexKeyLen() * 8;
-		return minKey.load(std::memory_order_seq_cst) >> shiftLen << shiftLen;
+		return minKey >> shiftLen << shiftLen;
 	}
 	
 	// DANGER: make sure you know what you are doing...
@@ -161,10 +161,10 @@ struct CuckooHashTableNode
 	void AlterIndexKeyLen(int newIndexKeyLen)
 	{
 		assert(IsNode());
-		uint32_t hashVal = hash.load(std::memory_order_seq_cst);
+		uint32_t hashVal = hash;
 		hashVal &= 0xc7ffffffU;
 		hashVal |= (newIndexKeyLen - 1) << 27;
-		hash.store(hashVal, std::memory_order_seq_cst);
+		hash = hashVal;
 	}
 	
 	// DANGER: make sure you know what you are doing...
@@ -173,22 +173,22 @@ struct CuckooHashTableNode
 	{
 		assert(IsNode());
 		assert(0 <= hash18bit && hash18bit < (1<<18));
-		uint32_t hashVal = hash.load(std::memory_order_seq_cst);
+		uint32_t hashVal = hash;
 		hashVal &= 0xfffc0000;
 		hashVal |= hash18bit;
-		hash.store(hashVal, std::memory_order_seq_cst);
+		hash = hashVal;
 	}
 	
 	int GetFullKeyLen()
 	{
 		assert(IsNode());
-		return 1 + ((hash.load(std::memory_order_seq_cst) >> 24) & 7);
+		return 1 + ((hash >> 24) & 7);
 	}
 	
 	uint64_t GetFullKey()
 	{
 		assert(IsNode());
-		return minKey.load(std::memory_order_seq_cst);
+		return minKey;
 	}
 	
 	bool IsLeaf()
@@ -200,20 +200,20 @@ struct CuckooHashTableNode
 	bool IsUsingInternalChildMap()
 	{
 		assert(IsNode());
-		return ((hash.load(std::memory_order_seq_cst) >> 21) & 7) == 0;
+		return ((hash >> 21) & 7) == 0;
 	}
 	
 	bool IsExternalPointerBitMap()
 	{
 		assert(IsNode() && !IsUsingInternalChildMap());
-		return ((hash.load(std::memory_order_seq_cst) >> 21) & 7) == 4;
+		return ((hash >> 21) & 7) == 4;
 	}
 	
 	int GetChildNum()
 	{
 		if (NUM_CHILDREN(generation.load(std::memory_order_seq_cst)) <= 8)
 		{
-			return 1 + ((hash.load(std::memory_order_seq_cst) >> 18) & 7);
+			return 1 + ((hash >> 18) & 7);
 		}
 
 		return NUM_CHILDREN(generation.load(std::memory_order_seq_cst));
@@ -223,10 +223,10 @@ struct CuckooHashTableNode
 	{
 		if (k <= 8)
 		{
-			uint32_t hashVal = hash.load(std::memory_order_seq_cst);
+			uint32_t hashVal = hash;
 			hashVal &= 0xffe3ffffU;
 			hashVal |= ((k-1) << 18);
-			hash.store(hashVal, std::memory_order_seq_cst);
+			hash = hashVal;
 		}
 
 		SET_NUM_CHILDREN(generation, k);
@@ -335,11 +335,11 @@ public:
 			assert(IsValid());
 			if (h2 == nullptr || h1->IsEqual(expectedHash, shiftLen, shiftedKey))
 			{
-				return h1->minKey.load(std::memory_order_seq_cst);
+				return h1->minKey;
 			}
 			else
 			{
-				return h2->minKey.load(std::memory_order_seq_cst);
+				return h2->minKey;
 			}
 		}
 
