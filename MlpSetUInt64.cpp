@@ -616,13 +616,13 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 	{
 		for (int i = 255; i >= 0; i--)
 		{
-			if (reinterpret_cast<uint8_t*>(childMap)[i / 8] & (1 << (i % 8)))
+			if (reinterpret_cast<uint8_t*>(childMap.load(std::memory_order_seq_cst))[i / 8] & (1 << (i % 8)))
 			{
 				tmpChildMap <<= 8;
 				tmpChildMap |= i;
 			}
 		}
-		childMap = tmpChildMap;
+		childMap.store(tmpChildMap, std::memory_order_seq_cst);
 		return;
 	}
 
@@ -651,16 +651,16 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 
 	for (int i = 64; i >= 0; i--)
 	{
-		if (childMap & (uint64_t(1) << i))
+		if (childMap.load(std::memory_order_seq_cst) & (uint64_t(1) << i))
 		{
 			tmpChildMap <<= 8;
 			tmpChildMap |= i;
 		}
 	}
 	
-	childMap = tmpChildMap;
+	childMap.store(tmpChildMap, std::memory_order_seq_cst);
 
-	hash &= ~(7 << 21); // mark the node as using internal child map
+	hash.store(hash.load(std::memory_order_seq_cst) & ~(7 << 21), std::memory_order_seq_cst); // mark the node as using internal child map
 }
 
 void CuckooHashTableNode::RemoveChild(int child)
@@ -673,7 +673,7 @@ void CuckooHashTableNode::RemoveChild(int child)
 	if (IsUsingInternalChildMap())
 	{
 		SetChildNum(amountOfChildren-1);
-		__m64 z = _mm_cvtsi64_m64(childMap);
+		__m64 z = _mm_cvtsi64_m64(childMap.load(std::memory_order_seq_cst));
 		__m64 cmpTarget = _mm_set1_pi8(child);
 		__m64 res = _mm_max_pu8(cmpTarget, z);
 		res = _mm_cmpeq_pi8(cmpTarget, res);
@@ -682,7 +682,7 @@ void CuckooHashTableNode::RemoveChild(int child)
 		msk++;
 		int pos = __builtin_ffs(msk);
 		assert(2 <= pos && pos <= amountOfChildren + 1);
-		uint64_t larger = (pos == 8) ? 0 : (childMap >> ((pos-1)*8) << ((pos-2)*8));
+		uint64_t larger = (pos == 8) ? 0 : (childMap.load(std::memory_order_seq_cst) >> ((pos-1)*8) << ((pos-2)*8));
 		uint64_t smaller;
 		if (pos == 2)
 		{
@@ -690,9 +690,9 @@ void CuckooHashTableNode::RemoveChild(int child)
 		}
 		else
 		{
-			smaller = childMap & ((uint64_t(1) << ((pos-2)*8)) - 1);
+			smaller = childMap.load(std::memory_order_seq_cst) & ((uint64_t(1) << ((pos-2)*8)) - 1);
 		}
-		childMap = smaller | larger;
+		childMap.store(smaller | larger, std::memory_order_seq_cst);
 		return; // TODO: this doesn't work, make it work
 	}
 
@@ -1534,74 +1534,74 @@ std::optional<uint64_t> MlpSet::ClearL1AndL2Caches(uint64_t value)
 	return opt_successor;
 }
 
-bool MlpSet::Remove(uint64_t value)
-{
-	uint32_t ilen;
-	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
-	uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
-	uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
-	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
+// bool MlpSet::Remove(uint64_t value)
+// {
+// 	uint32_t ilen;
+// 	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
+// 	uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
+// 	uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
+// 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
 
-	int lcpLen = m_hashTable.QueryLCP(value, 
-		ilen /*out*/, 
-		allPositions1 /*out*/, 
-		allPositions2 /*out*/, 
-		expectedHash /*out*/);
+// 	int lcpLen = m_hashTable.QueryLCP(value, 
+// 		ilen /*out*/, 
+// 		allPositions1 /*out*/, 
+// 		allPositions2 /*out*/, 
+// 		expectedHash /*out*/);
 
-	if (lcpLen < 8)
-	{
-		// If the LCP is less than 8, we cannot remove it
-		// because it is not a full key in the hash table
-		return false;
-	}
+// 	if (lcpLen < 8)
+// 	{
+// 		// If the LCP is less than 8, we cannot remove it
+// 		// because it is not a full key in the hash table
+// 		return false;
+// 	}
 
-	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
+// 	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
 
-	// Remove the node from the hash table
-	bool res = m_hashTable.Remove(ilen, value);
-	assert(res);
+// 	// Remove the node from the hash table
+// 	bool res = m_hashTable.Remove(ilen, value);
+// 	assert(res);
 
-	bool remove_child = true;
-	uint8_t remove_child_offset = 8;
-	for (ilen--; ilen > 2; ilen--)
-	{
-		// find the right position
-		uint32_t pos = allPositions1[ilen - 1];
-		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
-		{
-			pos = allPositions2[ilen - 1];
-		}
+// 	bool remove_child = true;
+// 	uint8_t remove_child_offset = 8;
+// 	for (ilen--; ilen > 2; ilen--)
+// 	{
+// 		// find the right position
+// 		uint32_t pos = allPositions1[ilen - 1];
+// 		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
+// 		{
+// 			pos = allPositions2[ilen - 1];
+// 		}
 
-		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
-		{
-			// empty node
-			continue;
-		}
+// 		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
+// 		{
+// 			// empty node
+// 			continue;
+// 		}
 
-		// If the successor isn't in the the subtree of the current node,
-		// that means the current node has no children, and will be deleted
-		// anyway
-		if (value == m_hashTable.ht[pos].minKey && opt_successor.has_value())
-		{
-			m_hashTable.ht[pos].minKey = *opt_successor;
-		}
+// 		// If the successor isn't in the the subtree of the current node,
+// 		// that means the current node has no children, and will be deleted
+// 		// anyway
+// 		if (value == m_hashTable.ht[pos].minKey && opt_successor.has_value())
+// 		{
+// 			m_hashTable.ht[pos].minKey = *opt_successor;
+// 		}
 
-		if (remove_child)
-		{
-			m_hashTable.ht[pos].RemoveChild((value >> (64 - 8 * remove_child_offset)) % 256);
-			remove_child = false;
-		}
+// 		if (remove_child)
+// 		{
+// 			m_hashTable.ht[pos].RemoveChild((value >> (64 - 8 * remove_child_offset)) % 256);
+// 			remove_child = false;
+// 		}
 
-		if (m_hashTable.ht[pos].GetChildNum() == 1)
-		{
-			m_hashTable.ht[pos].Clear();
-			remove_child = true;
-			remove_child_offset = ilen;
-		}
-	}
+// 		if (m_hashTable.ht[pos].GetChildNum() == 1)
+// 		{
+// 			m_hashTable.ht[pos].Clear();
+// 			remove_child = true;
+// 			remove_child_offset = ilen;
+// 		}
+// 	}
 
-	return true;
-}
+// 	return true;
+// }
 
 bool MlpSet::Insert(uint64_t value)
 {

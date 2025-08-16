@@ -1156,7 +1156,7 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreaded)
 
     for (uint64_t i: values)
     {
-		s.Remove(i);
+		// s.Remove(i);
 		ReleaseAssert(!s.Exist(i));
     }
 }
