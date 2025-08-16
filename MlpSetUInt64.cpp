@@ -565,7 +565,7 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 		return;
 	}
 
-	for (int i = 255; i > 64; i--)
+	for (int i = 255; i >= 64; i--)
 	{
 		if (i == 94 || i == 95)
 		{
@@ -588,7 +588,7 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 		}
 	}
 
-	for (int i = 64; i >= 0; i--)
+	for (int i = 63; i >= 0; i--)
 	{
 		if (childMap & (uint64_t(1) << i))
 		{
