@@ -622,7 +622,7 @@ void CuckooHashTableNode::RemoveChild(int child)
 		msk++;
 		int pos = __builtin_ffs(msk);
 		assert(2 <= pos && pos <= amountOfChildren + 1);
-		uint64_t larger = (pos == 8) ? 0 : (childMap >> ((pos-1)*8) << ((pos-2)*8));
+		uint64_t larger = (pos == 9) ? 0 : (childMap >> ((pos-1)*8) << ((pos-2)*8));
 		uint64_t smaller;
 		if (pos == 2)
 		{
