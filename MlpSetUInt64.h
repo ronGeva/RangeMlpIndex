@@ -157,12 +157,12 @@ struct CuckooHashTableNode
 	
 	int GetChildNum()
 	{
-		if (childrenCount <= 8 && childrenCount > 0)
+		if (childrenCount <= 7)
 		{
 			return 1 + ((hash >> 18) & 7);
 		}
 
-		return childrenCount;
+		return childrenCount + 1;
 	}
 	
 	void SetChildNum(int k)
@@ -173,7 +173,7 @@ struct CuckooHashTableNode
 			hash |= ((k-1) << 18);
 		}
 
-		childrenCount = k;
+		childrenCount = k - 1;
 	}
 	
 	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild);
@@ -206,7 +206,8 @@ struct CuckooHashTableNode
 	void RevertToInternalBitmap();
 
 	// Remove a child, must exist
-	void RemoveChild(int child);
+	// Returns whether we now have 0 children
+	bool RemoveChild(int child);
 
 	// for debug only, get list of all children in sorted order
 	//

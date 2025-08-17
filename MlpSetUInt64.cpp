@@ -604,7 +604,7 @@ _leave:
 	hash &= ~(7 << 21); // mark the node as using internal child map
 }
 
-void CuckooHashTableNode::RemoveChild(int child)
+bool CuckooHashTableNode::RemoveChild(int child)
 {
 	assert(IsNode() && !IsLeaf());
 	assert(0 <= child && child <= 255);
@@ -634,7 +634,7 @@ void CuckooHashTableNode::RemoveChild(int child)
 			smaller = childMap & ((uint64_t(1) << ((pos-2)*8)) - 1);
 		}
 		childMap = smaller | larger;
-		return; // TODO: this doesn't work, make it work
+		goto _Leave; // TODO: this doesn't work, make it work
 	}
 
 	BitMapSet(child, false);
@@ -647,6 +647,10 @@ void CuckooHashTableNode::RemoveChild(int child)
 	}
 
 	SetChildNum(amountOfChildren - 1);
+
+_Leave:
+	// if we had 1 child we now have 0 which mean we should be deleted
+	return amountOfChildren == 1;
 }
 
 vector<int> CuckooHashTableNode::GetAllChildren()
@@ -1428,12 +1432,13 @@ bool MlpSet::Remove(uint64_t value)
 		const int child = (value >> (64 - 8 * remove_child_offset)) % 256;
 		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
 		{
-			m_hashTable.ht[pos].RemoveChild(child);
+			bool zero_children = m_hashTable.ht[pos].RemoveChild(child);
 			remove_child = false;
-		}
+			if (!zero_children)
+				continue;
 
-		if (m_hashTable.ht[pos].GetChildNum() == 0)
-		{
+			// the current node has no more children, delete and remember to
+			// delete the pointer to it from its parent as we move up the tree
 			m_hashTable.ht[pos].Clear();
 			remove_child = true;
 			remove_child_offset = ilen;
