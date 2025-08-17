@@ -1235,13 +1235,13 @@ void generate_input(std::vector<uint64_t>& insertions, std::vector<uint64_t>& re
     // By default, it generates numbers in the full range of its template parameter.
     std::uniform_int_distribution<uint64_t> distrib;
 
-    const int num_to_generate = 5000;
+    const int num_to_generate = 100000;
     insertions.reserve(num_to_generate); // Reserve memory for efficiency
 
     // Generate 100,000 random numbers and store them in the vector.
     for (int i = 0; i < num_to_generate; ++i) {
         // Call the distribution object with the generator engine to get a random number.
-        insertions.push_back(distrib(gen) % 20000);
+        insertions.push_back(distrib(gen) % 400000);
     }
 
 	// remove duplicates
@@ -1272,30 +1272,29 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
 	{
 		s.Insert(num);
 	}
+
+	std::set<uint64_t> numbers_in_ds =
+		std::set<uint64_t>(insertions.begin(), insertions.end());
 	
 	for (size_t i = 0; i < removals.size(); i++)
 	{
 		uint64_t num = removals[i];
-		bool successor_should_be_found = false;
-		uint64_t successor = 0xffffffffffffffffULL;
-		for (size_t j = i + 1; j < removals.size(); j++)
+
+		// check we can still find the current number's successor
+		auto itr = numbers_in_ds.find(num);
+		itr++;
+		if (itr != numbers_in_ds.end())
 		{
-			if (removals[j] > num && successor > removals[j])
-			{
-				successor_should_be_found = true;
-				successor = removals[j];
-			}
-		}
-		bool found;
-		uint64_t found_successor = s.LowerBound(num + 1, found);
-		assert(found == successor_should_be_found);
-		if (found)
-		{
-			assert(found_successor == successor);
+			bool found;
+			uint64_t successor = s.LowerBound(num + 1, found);
+			assert(found);
+			assert(successor == *itr);
 		}
 
 		s.Remove(num);
 		ReleaseAssert(!s.Exist(num));
+
+		numbers_in_ds.erase(num);
 	}
 	
 	for (uint64_t num: removals)
