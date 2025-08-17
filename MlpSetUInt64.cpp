@@ -207,6 +207,7 @@ void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash1
 	hash = 0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit;
 	minKey = dkey;
 	childMap = firstChild;
+	childrenCount = firstChild != -1 ? 1 : 0;
 }
 	
 int CuckooHashTableNode::FindNeighboringEmptySlot()

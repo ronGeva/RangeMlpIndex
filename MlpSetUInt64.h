@@ -157,7 +157,7 @@ struct CuckooHashTableNode
 	
 	int GetChildNum()
 	{
-		if (childrenCount <= 8)
+		if (childrenCount <= 8 && childrenCount > 0)
 		{
 			return 1 + ((hash >> 18) & 7);
 		}
