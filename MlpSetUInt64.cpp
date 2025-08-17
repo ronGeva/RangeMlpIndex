@@ -1432,7 +1432,7 @@ bool MlpSet::Remove(uint64_t value)
 			remove_child = false;
 		}
 
-		if (m_hashTable.ht[pos].GetChildNum() == 1)
+		if (m_hashTable.ht[pos].GetChildNum() == 0)
 		{
 			m_hashTable.ht[pos].Clear();
 			remove_child = true;
