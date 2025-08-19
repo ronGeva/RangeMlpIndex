@@ -241,6 +241,8 @@ void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash1
 	hash = 0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit;
 	minKey = dkey;
 	childMap.store(firstChild, std::memory_order_seq_cst);
+	int childrenCount = firstChild != -1 ? 1 : 0;
+	SetChildNum(childrenCount);
 }
 	
 int CuckooHashTableNode::FindNeighboringEmptySlot()
@@ -623,10 +625,10 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 			}
 		}
 		childMap.store(tmpChildMap, std::memory_order_seq_cst);
-		return;
+		goto _leave;
 	}
 
-	for (int i = 255; i > 64; i--)
+	for (int i = 255; i >= 64; i--)
 	{
 		if (i == 94 || i == 95)
 		{
@@ -649,7 +651,7 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 		}
 	}
 
-	for (int i = 64; i >= 0; i--)
+	for (int i = 63; i >= 0; i--)
 	{
 		if (childMap.load(std::memory_order_seq_cst) & (uint64_t(1) << i))
 		{
@@ -660,10 +662,11 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 	
 	childMap.store(tmpChildMap, std::memory_order_seq_cst);
 
-	hash = hash & ~(7 << 21); // mark the node as using internal child map
+_leave:
+	hash &= ~(7 << 21); // mark the node as using internal child map
 }
 
-void CuckooHashTableNode::RemoveChild(int child)
+bool CuckooHashTableNode::RemoveChild(int child)
 {
 	assert(IsNode() && !IsLeaf());
 	assert(0 <= child && child <= 255);
@@ -682,7 +685,7 @@ void CuckooHashTableNode::RemoveChild(int child)
 		msk++;
 		int pos = __builtin_ffs(msk);
 		assert(2 <= pos && pos <= amountOfChildren + 1);
-		uint64_t larger = (pos == 8) ? 0 : (childMap.load(std::memory_order_seq_cst) >> ((pos-1)*8) << ((pos-2)*8));
+		uint64_t larger = (pos == 9) ? 0 : (childMap.load(std::memory_order_seq_cst) >> ((pos-1)*8) << ((pos-2)*8));
 		uint64_t smaller;
 		if (pos == 2)
 		{
@@ -693,7 +696,7 @@ void CuckooHashTableNode::RemoveChild(int child)
 			smaller = childMap.load(std::memory_order_seq_cst) & ((uint64_t(1) << ((pos-2)*8)) - 1);
 		}
 		childMap.store(smaller | larger, std::memory_order_seq_cst);
-		return; // TODO: this doesn't work, make it work
+		goto _Leave; // TODO: this doesn't work, make it work
 	}
 
 	BitMapSet(child, false);
@@ -706,6 +709,10 @@ void CuckooHashTableNode::RemoveChild(int child)
 	}
 
 	SetChildNum(amountOfChildren - 1);
+
+_Leave:
+	// if we had 1 child we now have 0 which mean we should be deleted
+	return amountOfChildren == 1;
 }
 
 vector<int> CuckooHashTableNode::GetAllChildren()
@@ -1589,14 +1596,16 @@ std::optional<uint64_t> MlpSet::ClearL1AndL2Caches(uint64_t value)
 // 			m_hashTable.ht[pos].minKey = *opt_successor;
 // 		}
 
-// 		if (remove_child)
+// 		const int child = (value >> (64 - 8 * remove_child_offset)) % 256;
+// 		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
 // 		{
-// 			m_hashTable.ht[pos].RemoveChild((value >> (64 - 8 * remove_child_offset)) % 256);
+// 			bool zero_children = m_hashTable.ht[pos].RemoveChild(child);
 // 			remove_child = false;
-// 		}
+// 			if (!zero_children)
+// 				continue;
 
-// 		if (m_hashTable.ht[pos].GetChildNum() == 1)
-// 		{
+// 			// the current node has no more children, delete and remember to
+// 			// delete the pointer to it from its parent as we move up the tree
 // 			m_hashTable.ht[pos].Clear();
 // 			remove_child = true;
 // 			remove_child_offset = ilen;

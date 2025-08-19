@@ -12,7 +12,7 @@ static std::mutex debug_print_mutex;
 
 // #define TRACE
 
-#define NUM_CHILDREN(generation) ((generation >> 24) & 0xff)
+#define NUM_CHILDREN(generation) ((generation >> 24) & 0xff) + 1
 #define SET_NUM_CHILDREN(generation, k) (generation.store((generation.load(std::memory_order_seq_cst) & 0x00ffffff) | (k << 24), std::memory_order_seq_cst))
 
 #ifndef TRACE
@@ -207,7 +207,7 @@ struct CuckooHashTableNode
 	
 	int GetChildNum()
 	{
-		if (NUM_CHILDREN(generation.load(std::memory_order_seq_cst)) <= 8)
+		if (NUM_CHILDREN(generation.load(std::memory_order_seq_cst)) <= 7)
 		{
 			return 1 + ((hash >> 18) & 7);
 		}
@@ -225,7 +225,7 @@ struct CuckooHashTableNode
 			hash = hashVal;
 		}
 
-		SET_NUM_CHILDREN(generation, k);
+		SET_NUM_CHILDREN(generation, k - 1);
 	}
 	
 	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen);
@@ -258,7 +258,8 @@ struct CuckooHashTableNode
 	void RevertToInternalBitmap();
 
 	// Remove a child, must exist
-	void RemoveChild(int child);
+	// Returns whether we now have 0 children
+	bool RemoveChild(int child);
 
 	// for debug only, get list of all children in sorted order
 	//
