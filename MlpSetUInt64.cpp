@@ -782,14 +782,16 @@ uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 {
 	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap() && !IsExternalPointerBitMap());
 	uint64_t* ptr = AllocateExternalBitMap();
+	CuckooHashTableNode* node_ptr = reinterpret_cast<CuckooHashTableNode*>(&ptr[1]);
 	
 	int offset = (hash >> 21) & 7;
-	ptr[2] = this[offset-4].generation.load(std::memory_order_seq_cst); 
 	ptr[0] = childMap.load(std::memory_order_seq_cst);
-	// Safely copy atomic fields using proper atomic operations instead of memcpy
-	// Copy the bitmap node structure field by field
-	ptr[1] = this[offset-4].hash;
-	ptr[3] = this[offset-4].minKey;
+
+	node_ptr->generation.store(this[offset-4].generation.load(std::memory_order_seq_cst));
+	node_ptr->hash = this[offset-4].hash;
+	node_ptr->minKey = this[offset-4].minKey;
+	node_ptr->childMap.store(this[offset-4].childMap.load(std::memory_order_seq_cst));
+	
 	ptr[1] &= 0xffffffff3fffffffULL;
 	ptr[1] |= uint64_t((hash >> 18) & 3) << 30;
 	return ptr;
