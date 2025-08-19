@@ -1,10 +1,54 @@
 #pragma once
 
 #include "common.h"
+#include <shared_mutex>
+#include <atomic>
+#include <boost/thread/shared_mutex.hpp>
+#include <boost/thread/locks.hpp>
+
+#include <mutex>
+static std::mutex debug_print_mutex;
+
+
+// #define TRACE
+
+#define NUM_CHILDREN(generation) ((generation >> 24) & 0xff) + 1
+#define SET_NUM_CHILDREN(generation, k) (generation.store((generation.load(std::memory_order_seq_cst) & 0x00ffffff) | (k << 24), std::memory_order_seq_cst))
+
+#ifndef TRACE
+#define DEBUG(msg)
+#else
+#define DEBUG(msg) do { \
+    	               auto n = std::chrono::system_clock::now(); \
+    	               auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(n.time_since_epoch()) % std::chrono::seconds(1); \
+    	               std::time_t t = std::chrono::system_clock::to_time_t(n); \
+    	               std::tm tm = *std::localtime(&t); \
+					   const char* file = std::strrchr(__FILE__, '/'); \
+					   file = file ? file + 1 : __FILE__; \				   
+					   std::lock_guard<std::mutex> lock(debug_print_mutex); \
+    	               std::cout << std::put_time(&tm, "%H:%M:%S.") << std::setw(9) << std::setfill('0') << ns.count() << " " \
+    	                         << "T" << std::this_thread::get_id() << ' ' << file << ':' << __LINE__ << ':' << __func__ \
+    	                         << " - " << msg << std::endl; \
+					} while(0)
+#endif
 #include <optional>
 
 namespace MlpSetUInt64
 {
+
+
+// Displacement can't be protected by generation.
+static std::shared_mutex displacement_mutex;
+
+class LockGuard {
+public:
+	LockGuard(std::shared_mutex *m, bool is_shared);
+	~LockGuard();
+
+private:
+	std::shared_mutex *m;
+	bool _is_shared;
+};
 
 // Cuckoo hash table node
 //
@@ -21,10 +65,9 @@ struct CuckooHashTableNode
 	// 18 bit: hash 
 	//
 	uint32_t hash;	
-	// points to min node in this subtree
-	//
-	uint32_t childrenCount: 8;
-	uint32_t reserved: 24;
+	// points to min node in this subtree - UNUSED in the original implementation
+	// generation first byte is used for num of children, second byte for generation.
+	std::atomic<uint32_t> generation;
 	// the min node's full key
 	// the first indexLen bytes prefix is this node's index into the hash table
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
@@ -37,20 +80,22 @@ struct CuckooHashTableNode
 	// when using pointer external bitmap, this is the pointer to the 32-byte bitmap
 	// when it is a leaf, this is the opaque data pointer
 	// 
-	uint64_t childMap;
-	
-	// intentionally no constructor function
-	// we are always using mmap() to allocate the hash table 
-	// so constructors will not be called
-	//
+	std::atomic<uint64_t> childMap;
+
+	// Copy fields from another node in a way that works with std::atomic
+	void CopyWithoutGeneration(const CuckooHashTableNode& other) {
+		hash = other.hash;
+		minKey = other.minKey;
+		childMap.store(other.childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+	}
+
 	
 	void Clear()
 	{
 		hash = 0;
-		childrenCount = 0;
-		reserved = 0;
+		generation.store(0, std::memory_order_seq_cst);
 		minKey = 0;
-		childMap = 0;
+		childMap.store(0, std::memory_order_seq_cst);
 	}
 
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)
@@ -65,8 +110,9 @@ struct CuckooHashTableNode
 	
 	int GetOccupyFlag()
 	{
-		assert((hash >> 30) != 1);
-		return hash >> 30;
+		uint32_t hashVal = hash;
+		assert((hashVal >> 30) != 1);
+		return hashVal >> 30;
 	}
 	
 	bool IsOccupied()
@@ -111,8 +157,10 @@ struct CuckooHashTableNode
 	void AlterIndexKeyLen(int newIndexKeyLen)
 	{
 		assert(IsNode());
-		hash &= 0xc7ffffffU;
-		hash |= (newIndexKeyLen - 1) << 27;
+		uint32_t hashVal = hash;
+		hashVal &= 0xc7ffffffU;
+		hashVal |= (newIndexKeyLen - 1) << 27;
+		hash = hashVal;
 	}
 	
 	// DANGER: make sure you know what you are doing...
@@ -121,8 +169,10 @@ struct CuckooHashTableNode
 	{
 		assert(IsNode());
 		assert(0 <= hash18bit && hash18bit < (1<<18));
-		hash &= 0xfffc0000;
-		hash |= hash18bit;
+		uint32_t hashVal = hash;
+		hashVal &= 0xfffc0000;
+		hashVal |= hash18bit;
+		hash = hashVal;
 	}
 	
 	int GetFullKeyLen()
@@ -157,26 +207,28 @@ struct CuckooHashTableNode
 	
 	int GetChildNum()
 	{
-		if (childrenCount <= 7)
+		if (NUM_CHILDREN(generation.load(std::memory_order_seq_cst)) <= 7)
 		{
 			return 1 + ((hash >> 18) & 7);
 		}
 
-		return childrenCount + 1;
+		return NUM_CHILDREN(generation.load(std::memory_order_seq_cst));
 	}
 	
 	void SetChildNum(int k)
 	{
 		if (k <= 8)
 		{
-			hash &= 0xffe3ffffU;
-			hash |= ((k-1) << 18);
+			uint32_t hashVal = hash;
+			hashVal &= 0xffe3ffffU;
+			hashVal |= ((k-1) << 18);
+			hash = hashVal;
 		}
 
-		childrenCount = k - 1;
+		SET_NUM_CHILDREN(generation, k - 1);
 	}
 	
-	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild);
+	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen);
 	
 	int FindNeighboringEmptySlot();
 	
@@ -188,7 +240,7 @@ struct CuckooHashTableNode
 	
 	// Switch from internal child list to internal/external bitmap
 	//
-	void ExtendToBitMap();
+	void ExtendToBitMap(uint32_t generation);
 	
 	// Find minimum child >= given child
 	// returns -1 if larger child does not exist
@@ -201,7 +253,7 @@ struct CuckooHashTableNode
 	
 	// Add a new child, must not exist
 	//
-	void AddChild(int child);
+	void AddChild(int child, uint32_t generation);
 
 	void RevertToInternalBitmap();
 
@@ -219,7 +271,7 @@ struct CuckooHashTableNode
 	
 	// Move this node as well as its bitmap to target
 	//
-	void MoveNode(CuckooHashTableNode* target);
+	void MoveNode(CuckooHashTableNode* target, uint32_t generation);
 	
 	// Relocate its internal bitmap to another position
 	//
@@ -234,6 +286,7 @@ static_assert(sizeof(CuckooHashTableNode) == 24, "size of node should be 24");
 class CuckooHashTable
 {
 public:
+
 #ifdef ENABLE_STATS
 	struct Stats
 	{
@@ -269,6 +322,10 @@ public:
 		{ }
 		
 		bool IsValid() { return valid; }
+
+		bool IsGenerationValid(uint32_t generation) { 
+			return h1->generation.load(std::memory_order_seq_cst) <= generation && (h2 == nullptr || h2->generation.load(std::memory_order_seq_cst) <= generation);
+		}
 		
 		uint64_t Resolve()
 		{
@@ -282,6 +339,8 @@ public:
 				return h2->minKey;
 			}
 		}
+
+		
 		
 		void Prefetch()
 		{
@@ -308,13 +367,13 @@ public:
 	
 	// Execute Cuckoo displacements to make up a slot for the specified key
 	//
-	uint32_t ReservePositionForInsert(int ilen, uint64_t dkey, uint32_t hash18bit, bool& exist, bool& failed);
+	uint32_t ReservePositionForInsert(int ilen, uint64_t dkey, uint32_t hash18bit, bool& exist, bool& failed, uint32_t generation);
 	
 	// Insert a node into the hash table
 	// Since we use path-compression, if the node is not a leaf, it must has at least one child already known
 	// In case it is a leaf, firstChild should be -1
 	//
-	uint32_t Insert(int ilen, int dlen, uint64_t dkey, int firstChild, bool& exist, bool& failed);
+	uint32_t Insert(int ilen, int dlen, uint64_t dkey, int firstChild, bool& exist, bool& failed, uint32_t generation);
 
 	// Single point lookup, returns index in hash table if found
 	//
@@ -338,11 +397,19 @@ public:
 	//   and expectedHash[i] will be its expected hash value.
 	// allPositions1, allPositions2, expectedHash must be buffers at least 32 bytes long. 
 	//
+	int QueryLCPInternal(uint64_t key, 
+                 		 uint32_t& idxLen, 
+                 		 uint32_t* allPositions1, 
+                 		 uint32_t* allPositions2, 
+                 		 uint32_t* expectedHash,
+				 		 uint32_t generation);
+
 	int QueryLCP(uint64_t key, 
                  uint32_t& idxLen, 
                  uint32_t* allPositions1, 
                  uint32_t* allPositions2, 
-                 uint32_t* expectedHash);
+                 uint32_t* expectedHash,
+				 std::atomic<uint32_t>& cur_generation);
 	
 	// hash table array pointer
 	//
@@ -357,16 +424,23 @@ public:
 #endif
 
 private:
-	void HashTableCuckooDisplacement(uint32_t victimPosition, int rounds, bool& failed);
+	void HashTableCuckooDisplacement(uint32_t victimPosition, int rounds, bool& failed, uint32_t generation);
 	
 #ifndef NDEBUG
 	bool m_hasCalledInit;
 #endif
 };
 
+// Removed global empty_promise to fix race condition - now use local construction
+
 class MlpSet
 {
+
 public:
+// Single writer implies no need for atomic operation. On the other hand using atomic we,
+// can reduce amount of times we see an old generation which may cause more restarts, might be worth to try both atomic and non-atomic
+std::atomic<uint32_t> cur_generation;
+
 #ifdef ENABLE_STATS
 	struct Stats
 	{
@@ -392,7 +466,7 @@ public:
 	bool Insert(uint64_t value);
 
 	// Removes an element, returns true if the removal took place, false if the element doesn't exists
-	bool Remove(uint64_t value);
+	// bool Remove(uint64_t value);
 	
 	// Returns whether the specified value exists in the set
 	//
@@ -411,9 +485,9 @@ public:
 	
 	// For debug purposes only
 	//
-	uint64_t* GetRootPtr() { return m_root; }
-	uint64_t* GetLv1Ptr() { return m_treeDepth1; }
-	uint64_t* GetLv2Ptr() { return m_treeDepth2; }
+	std::atomic<uint64_t>* GetRootPtr() { return m_root; }
+	std::atomic<uint64_t>* GetLv1Ptr() { return m_treeDepth1; }
+	std::atomic<uint64_t>* GetLv2Ptr() { return m_treeDepth2; }
 	CuckooHashTable* GetHtPtr() { return &m_hashTable; }
 	
 #ifdef ENABLE_STATS
@@ -422,7 +496,7 @@ public:
 #endif
 
 private:
-	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found);
+	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation);
 
 	void ClearL1Cache(uint64_t value, std::optional<uint64_t> successor);
 
@@ -440,13 +514,13 @@ private:
 	// root and depth 1 should be in L1 or L2 cache
 	// root of the tree, length 256 bits (32B)
 	//
-	uint64_t* m_root;
+	std::atomic<uint64_t>* m_root;
 	// lv1 of the tree, 256^2 bits (8KB)
 	//
-	uint64_t* m_treeDepth1;
+	std::atomic<uint64_t>* m_treeDepth1;
 	// lv2 of the tree, 256^3 bits (2MB), not supposed to be in cache
 	//
-	uint64_t* m_treeDepth2;
+	std::atomic<uint64_t>* m_treeDepth2;
 	// hash mapping parts of the tree, starting at lv3
 	//
 	CuckooHashTable m_hashTable;

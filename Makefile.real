@@ -35,8 +35,10 @@ OBJS := $(SRCS:$(SRC_RELDIR)./%=%)
 OBJS := $(subst .cpp,.o,$(OBJS))
 OBJS := $(subst /,.,$(OBJS))
 
+BOOST_LIBS := -lboost_thread -lboost_system
+
 main: $(OBJS) libgtest.a
-	g++ $(FLAGS) $(OBJS) libgtest.a -o main
+	g++ $(FLAGS) $(OBJS) libgtest.a $(BOOST_LIBS) -o main
 
 generated.dependency: $(SRCS_AND_HEADERS) Makefile
 	rm -f ./generated.dependency
