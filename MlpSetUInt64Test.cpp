@@ -17,7 +17,7 @@ namespace {
 //
 TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
 {
-	const int HtSize = 1 << 18;
+	const int HtSize = 1 << 26;
 	uint64_t allocatedArrLen = uint64_t(HtSize + 20) * sizeof(MlpSetUInt64::CuckooHashTableNode) + 256;
 	void* allocatedPtr = mmap(NULL, 
 		                      allocatedArrLen, 
