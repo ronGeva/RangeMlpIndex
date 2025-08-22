@@ -3,8 +3,6 @@
 #include "common.h"
 #include <shared_mutex>
 #include <atomic>
-#include <boost/thread/shared_mutex.hpp>
-#include <boost/thread/locks.hpp>
 
 #include <mutex>
 static std::mutex debug_print_mutex;
