@@ -335,7 +335,14 @@ public:
 		bool IsValid() { return valid; }
 
 		bool IsGenerationValid(uint32_t generation) { 
-			return h1->generation.load(std::memory_order_seq_cst) <= generation && (h2 == nullptr || h2->generation.load(std::memory_order_seq_cst) <= generation);
+			if (h2 == nullptr || h1->IsEqual(expectedHash, shiftLen, shiftedKey))
+			{
+				return h1->LoadGeneration() <= generation;
+			}
+			else
+			{
+				return h2->LoadGeneration() <= generation;
+			}
 		}
 		
 		uint64_t Resolve()
