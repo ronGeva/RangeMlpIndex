@@ -1188,11 +1188,11 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 			break;
 		}
 		// Check generation at start of each iteration to detect expiry during loop
-		if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation)
+		if (ht[allPositions1[len]].GetOccupyFlag() == 2 && ht[allPositions1[len]].LoadGeneration() > generation)
 		{
 			return -1;
 		}
-		if (ht[allPositions2[len]].generation.load(std::memory_order_seq_cst) > generation)
+		if (ht[allPositions2[len]].GetOccupyFlag() == 2 && ht[allPositions2[len]].LoadGeneration() > generation)
 		{
 			return -1;
 		}		
