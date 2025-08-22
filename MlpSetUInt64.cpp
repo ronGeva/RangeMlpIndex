@@ -362,7 +362,8 @@ void CuckooHashTableNode::ExtendToBitMap(uint32_t generation)
 	}
 	else
 	{
-		this[offset-4].generation.store(generation, std::memory_order_seq_cst);
+		// nullify neighbor node completely
+		this[offset-4].generation.store(0);
 		childMap.store(0, std::memory_order_seq_cst);
 		// Initialize the bitmap node with proper atomic stores
 		this[offset-4].hash = 0xc0000000U;
