@@ -85,6 +85,7 @@ struct CuckooHashTableNode
 		hash = other.hash;
 		minKey = other.minKey;
 		childMap.store(other.childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		SetChildNum(other.GetChildNum());
 	}
 
 	
@@ -213,7 +214,7 @@ struct CuckooHashTableNode
 		return ((hash >> 21) & 7) == 4;
 	}
 	
-	int GetChildNum()
+	int GetChildNum() const
 	{
 		if (NUM_CHILDREN(generation.load(std::memory_order_seq_cst)) <= 7)
 		{
