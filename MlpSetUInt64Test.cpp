@@ -1160,7 +1160,7 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreaded)
 
     for (uint64_t i: values)
     {
-		// s.Remove(i);
+		s.Remove(i);
 		ReleaseAssert(!s.Exist(i));
     }
 }
@@ -1294,7 +1294,7 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
 			assert(successor == *itr);
 		}
 
-		// s.Remove(num);
+		s.Remove(num);
 		ReleaseAssert(!s.Exist(num));
 
 		numbers_in_ds.erase(num);
@@ -1302,7 +1302,7 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
 	
 	for (uint64_t num: removals)
 	{
-		// s.Remove(num);
+		s.Remove(num);
 		ReleaseAssert(!s.Exist(num));
 	}
 }

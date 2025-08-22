@@ -1543,76 +1543,84 @@ std::optional<uint64_t> MlpSet::ClearL1AndL2Caches(uint64_t value)
 	return opt_successor;
 }
 
-// bool MlpSet::Remove(uint64_t value)
-// {
-// 	uint32_t ilen;
-// 	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
-// 	uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
-// 	uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
-// 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
+bool MlpSet::Remove(uint64_t value)
+{
+	uint32_t ilen;
+	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
+	uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
+	uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
+	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
 
-// 	int lcpLen = m_hashTable.QueryLCP(value, 
-// 		ilen /*out*/, 
-// 		allPositions1 /*out*/, 
-// 		allPositions2 /*out*/, 
-// 		expectedHash /*out*/);
+	uint32_t cur_gen = cur_generation.load(std::memory_order_seq_cst) + 1;
 
-// 	if (lcpLen < 8)
-// 	{
-// 		// If the LCP is less than 8, we cannot remove it
-// 		// because it is not a full key in the hash table
-// 		return false;
-// 	}
+	int lcpLen = m_hashTable.QueryLCPInternal(value, 
+		ilen /*out*/, 
+		allPositions1 /*out*/, 
+		allPositions2 /*out*/, 
+		expectedHash /*out*/,
+		cur_gen);
 
-// 	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
+	if (lcpLen < 8)
+	{
+		// If the LCP is less than 8, we cannot remove it
+		// because it is not a full key in the hash table
+		return false;
+	}
 
-// 	// Remove the node from the hash table
-// 	bool res = m_hashTable.Remove(ilen, value);
-// 	assert(res);
+	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
 
-// 	bool remove_child = true;
-// 	uint8_t remove_child_offset = 8;
-// 	for (ilen--; ilen > 2; ilen--)
-// 	{
-// 		// find the right position
-// 		uint32_t pos = allPositions1[ilen - 1];
-// 		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
-// 		{
-// 			pos = allPositions2[ilen - 1];
-// 		}
+	// Remove the node from the hash table
+	bool res = m_hashTable.Remove(ilen, value);
+	assert(res);
 
-// 		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
-// 		{
-// 			// empty node
-// 			continue;
-// 		}
+	bool remove_child = true;
+	uint8_t remove_child_offset;
+	for (ilen--; ilen > 2; ilen--)
+	{
+		// find the right position
+		uint32_t pos = allPositions1[ilen - 1];
+		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
+		{
+			pos = allPositions2[ilen - 1];
+		}
 
-// 		// If the successor isn't in the the subtree of the current node,
-// 		// that means the current node has no children, and will be deleted
-// 		// anyway
-// 		if (value == m_hashTable.ht[pos].minKey && opt_successor.has_value())
-// 		{
-// 			m_hashTable.ht[pos].minKey = *opt_successor;
-// 		}
+		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
+		{
+			// empty node
+			continue;
+		}
 
-// 		const int child = (value >> (64 - 8 * remove_child_offset)) % 256;
-// 		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
-// 		{
-// 			bool zero_children = m_hashTable.ht[pos].RemoveChild(child);
-// 			remove_child = false;
-// 			if (!zero_children)
-// 				continue;
+		// If the successor isn't in the the subtree of the current node,
+		// that means the current node has no children, and will be deleted
+		// anyway
+		if (value == m_hashTable.ht[pos].minKey && opt_successor.has_value())
+		{
+			m_hashTable.ht[pos].minKey = *opt_successor;
+		}
 
-// 			// the current node has no more children, delete and remember to
-// 			// delete the pointer to it from its parent as we move up the tree
-// 			m_hashTable.ht[pos].Clear();
-// 			remove_child = true;
-// 			remove_child_offset = ilen;
-// 		}
-// 	}
+		if (remove_child)
+		{
+			remove_child_offset = m_hashTable.ht[pos].GetFullKeyLen() + 1;
+		}
+		
+		const int child = (value >> (64 - 8 * remove_child_offset)) % 256;
+		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
+		{
+			bool zero_children = m_hashTable.ht[pos].RemoveChild(child);
+			remove_child = false;
+			if (!zero_children)
+				continue;
 
-// 	return true;
-// }
+			// the current node has no more children, delete and remember to
+			// delete the pointer to it from its parent as we move up the tree
+			m_hashTable.ht[pos].Clear();
+			remove_child = true;
+			remove_child_offset = ilen;
+		}
+	}
+
+	return true;
+}
 
 bool MlpSet::Insert(uint64_t value)
 {
