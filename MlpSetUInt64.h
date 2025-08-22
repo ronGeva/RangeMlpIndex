@@ -96,6 +96,16 @@ struct CuckooHashTableNode
 		childMap.store(0, std::memory_order_seq_cst);
 	}
 
+	void SetGeneration(uint32_t new_generation)
+	{
+		generation.store((generation.load() & 0xff000000) | (new_generation & 0xffffff));
+	}
+
+	uint32_t LoadGeneration()
+	{
+		return generation.load() & 0xffffff;
+	}
+
 	bool IsEqual(uint32_t expectedHash, int shiftLen, uint64_t shiftedKey)
 	{
 		return ((hash & 0xf803ffffU) == expectedHash) && (minKey >> shiftLen == shiftedKey);

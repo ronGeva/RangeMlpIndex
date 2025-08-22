@@ -1233,7 +1233,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 #endif
 	{
 		uint64_t xorValue = key ^ ht[allPositions1[len]].minKey;
-		if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation)
+		if (ht[allPositions1[len]].LoadGeneration() > generation)
 		{
 			return -1;
 		}
@@ -1250,34 +1250,34 @@ _slowpath:
 #ifdef ENABLE_STATS
 		stats.m_slowpathCount++;
 #endif
-        if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation) {
+        if (ht[allPositions1[len]].LoadGeneration() > generation) {
 			return -1;
 		}
 
 		if (ht[allPositions1[7]].IsEqualNoHash(key, 8)) { idxLen = 8; goto _slowpath_end; }
 		if (ht[allPositions2[7]].IsEqualNoHash(key, 8)) { allPositions1[7] = allPositions2[7]; idxLen = 8; goto _slowpath_end; }
 		// Check generation after accessing nodes to ensure data read is still valid
-		if (ht[allPositions1[7]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[7]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
+		if (ht[allPositions1[7]].LoadGeneration() > generation || ht[allPositions2[7]].LoadGeneration() > generation) { return -1; }
 		if (ht[allPositions1[6]].IsEqualNoHash(key, 7)) { idxLen = 7; goto _slowpath_end; }
 		if (ht[allPositions2[6]].IsEqualNoHash(key, 7)) { allPositions1[6] = allPositions2[6]; idxLen = 7; goto _slowpath_end; }
 		// Check generation after accessing nodes to ensure data read is still valid
-		if (ht[allPositions1[6]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[6]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
+		if (ht[allPositions1[6]].LoadGeneration() > generation || ht[allPositions2[6]].LoadGeneration() > generation) { return -1; }
 		if (ht[allPositions1[5]].IsEqualNoHash(key, 6)) { idxLen = 6; goto _slowpath_end; }
 		if (ht[allPositions2[5]].IsEqualNoHash(key, 6)) { allPositions1[5] = allPositions2[5]; idxLen = 6; goto _slowpath_end; }
 		// Check generation after accessing nodes to ensure data read is still valid
-		if (ht[allPositions1[5]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[5]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
+		if (ht[allPositions1[5]].LoadGeneration() > generation || ht[allPositions2[5]].LoadGeneration() > generation) { return -1; }
 		if (ht[allPositions1[4]].IsEqualNoHash(key, 5)) { idxLen = 5; goto _slowpath_end; }
 		if (ht[allPositions2[4]].IsEqualNoHash(key, 5)) { allPositions1[4] = allPositions2[4]; idxLen = 5; goto _slowpath_end; }
 		// Check generation after accessing nodes to ensure data read is still valid
-		if (ht[allPositions1[4]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[4]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
+		if (ht[allPositions1[4]].LoadGeneration() > generation || ht[allPositions2[4]].LoadGeneration() > generation) { return -1; }
 		if (ht[allPositions1[3]].IsEqualNoHash(key, 4)) { idxLen = 4; goto _slowpath_end; }
 		if (ht[allPositions2[3]].IsEqualNoHash(key, 4)) { allPositions1[3] = allPositions2[3]; idxLen = 4; goto _slowpath_end; }
 		// Check generation after accessing nodes to ensure data read is still valid
-		if (ht[allPositions1[3]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[3]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
+		if (ht[allPositions1[3]].LoadGeneration() > generation || ht[allPositions2[3]].LoadGeneration() > generation) { return -1; }
 		if (ht[allPositions1[2]].IsEqualNoHash(key, 3)) { idxLen = 3; goto _slowpath_end; }
 		if (ht[allPositions2[2]].IsEqualNoHash(key, 3)) { allPositions1[2] = allPositions2[2]; idxLen = 3; goto _slowpath_end; }
 		// Check generation after accessing nodes to ensure data read is still valid
-		if (ht[allPositions1[2]].generation.load(std::memory_order_seq_cst) > generation || ht[allPositions2[2]].generation.load(std::memory_order_seq_cst) > generation) { return -1; }
+		if (ht[allPositions1[2]].LoadGeneration() > generation || ht[allPositions2[2]].LoadGeneration() > generation) { return -1; }
 #ifdef ENABLE_STATS
 		stats.m_lcpResultHistogram[2]++;
 #endif
@@ -1288,7 +1288,7 @@ _slowpath_end:
 		stats.m_lcpResultHistogram[idxLen]++;
 #endif
 		uint64_t xorValue = key ^ ht[allPositions1[idxLen-1]].minKey;
-		if (ht[allPositions1[idxLen-1]].generation.load(std::memory_order_seq_cst) > generation)
+		if (ht[allPositions1[idxLen-1]].LoadGeneration() > generation)
 		{
 			return -1;
 		}
@@ -1331,7 +1331,7 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 #ifdef ENABLE_STATS
 		stats.m_movedNodesCount++;
 #endif
-        ht[h1].generation.store(generation, std::memory_order_seq_cst);
+        ht[h1].SetGeneration(generation);
 		ht[victimPosition].MoveNode(&ht[h1], generation);
 	}
 	else
@@ -1477,6 +1477,8 @@ void MlpSet::Init(uint32_t maxSetSize)
 	m_hashTable.Init(reinterpret_cast<CuckooHashTableNode*>(ptr + hashTableOffset), htSize - 1);
 	
 	memset(m_memoryPtr, 0, m_allocatedSize);
+
+	cur_generation.store(0);
 }
 
 void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
@@ -1671,7 +1673,7 @@ bool MlpSet::Insert(uint64_t value)
 			{
 				// path-compression string matched, no need to split
 				//
-				m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_seq_cst);
+				m_hashTable.ht[pos].SetGeneration(cur_gen);
 				m_hashTable.ht[pos].AddChild((value >> (56 - lcpLen * 8)) % 256, cur_gen);
 				if (value < m_hashTable.ht[pos].minKey)
 				{
@@ -1713,7 +1715,7 @@ bool MlpSet::Insert(uint64_t value)
 					// DEBUG("Locking");
 					// LockGuard lock(&displacement_mutex, false);
 					// DEBUG("locked");
-					m_hashTable.ht[x].generation.store(cur_gen, std::memory_order_seq_cst);
+					m_hashTable.ht[x].SetGeneration(cur_gen);
 					m_hashTable.ht[pos].MoveNode(&(m_hashTable.ht[x]), cur_gen);
 					m_hashTable.ht[x].AlterIndexKeyLen(lcpLen + 1);
 					m_hashTable.ht[x].AlterHash18bit(newHash18bit);
@@ -1791,7 +1793,7 @@ bool MlpSet::Insert(uint64_t value)
 						assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 						if (value < m_hashTable.ht[pos].minKey)
 						{
-							m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_seq_cst);
+							m_hashTable.ht[pos].SetGeneration(cur_gen);
 							m_hashTable.ht[pos].minKey = value;
 						}
 						else
@@ -1811,7 +1813,7 @@ bool MlpSet::Insert(uint64_t value)
 							assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 							if (value < m_hashTable.ht[pos].minKey)
 							{
-								m_hashTable.ht[pos].generation.store(cur_gen, std::memory_order_seq_cst);
+								m_hashTable.ht[pos].SetGeneration(cur_gen);
 								m_hashTable.ht[pos].minKey = value;
 							}
 							else
@@ -1908,7 +1910,7 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 	}
 	if (lcpLen == 8)
 	{
-		if (generation < m_hashTable.ht[allPositions[0][ilen - 1]].generation.load(std::memory_order_seq_cst))
+		if (generation < m_hashTable.ht[allPositions[0][ilen - 1]].LoadGeneration())
 		{
 			return CuckooHashTable::LookupMustExistPromise();
 		}
@@ -1930,13 +1932,13 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			// path compression string matches, lower bound on child
 			//
 			// Check generation before accessing node methods
-			if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+			if (generation < m_hashTable.ht[pos].LoadGeneration())
 			{
 				return CuckooHashTable::LookupMustExistPromise();
 			}
 			uint32_t child = (value >> (56 - dlen * 8)) & 255;
 			int lbChild = m_hashTable.ht[pos].LowerBoundChild(child);
-			if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+			if (generation < m_hashTable.ht[pos].LoadGeneration())
 			{
 				return CuckooHashTable::LookupMustExistPromise();
 			}
@@ -1959,7 +1961,7 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			//
 			if (value < m_hashTable.ht[pos].minKey)
 			{
-				if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+				if (generation < m_hashTable.ht[pos].LoadGeneration())
 				{
 					return CuckooHashTable::LookupMustExistPromise();
 				}
@@ -1991,7 +1993,7 @@ _parent:
 			{
 				uint32_t pos = allPositions[k][ilen - 1];
 				// Check generation before accessing node methods
-				if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+				if (generation < m_hashTable.ht[pos].LoadGeneration())
 				{
 					return CuckooHashTable::LookupMustExistPromise();
 				}
@@ -2000,7 +2002,7 @@ _parent:
 					assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 					int dlen = m_hashTable.ht[pos].GetFullKeyLen();
 					// Check generation again after method calls to ensure results are valid
-					if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+					if (generation < m_hashTable.ht[pos].LoadGeneration())
 					{
 						return CuckooHashTable::LookupMustExistPromise();
 					}
@@ -2009,13 +2011,13 @@ _parent:
 					if (child < 255)
 					{
 						// Check generation before accessing node methods
-						if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+						if (generation < m_hashTable.ht[pos].LoadGeneration())
 						{
 							return CuckooHashTable::LookupMustExistPromise();
 						}
 						int lbChild = m_hashTable.ht[pos].LowerBoundChild(child + 1);
 						// Check generation again after method call to ensure result is valid
-						if (generation < m_hashTable.ht[pos].generation.load(std::memory_order_seq_cst))
+						if (generation < m_hashTable.ht[pos].LoadGeneration())
 						{
 							return CuckooHashTable::LookupMustExistPromise();
 						}
