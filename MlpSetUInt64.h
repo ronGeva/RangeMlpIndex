@@ -234,8 +234,6 @@ struct CuckooHashTableNode
 
 		if (k != 0) {
 			SET_NUM_CHILDREN(generation, k - 1);
-		} else {
-			SET_NUM_CHILDREN(generation, 0);
 		}
 	}
 	
