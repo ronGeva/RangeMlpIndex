@@ -976,24 +976,20 @@ uint32_t CuckooHashTable::ReservePositionForInsert(int ilen, uint64_t dkey, uint
 	h2 = XXH::XXHashFn2(dkey, ilen) & htMask;
 	if (ht[h1].IsEqual(expectedHash, shiftLen, shiftedKey))
 	{
-		DEBUG("h1=" << h1 << " exist=" << exist << " failed=" << failed);
 		exist = true;
 		return h1;
 	}
 	if (ht[h2].IsEqual(expectedHash, shiftLen, shiftedKey))
 	{
-		DEBUG("h2=" << h2 << " exist=" << exist << " failed=" << failed);
 		exist = true;
 		return h2;
 	}
 	if (!ht[h1].IsOccupied())
 	{
-		DEBUG("h1=" << h1 << " exist=" << exist << " failed=" << failed);
 		return h1;
 	}
 	if (!ht[h2].IsOccupied())
 	{
-		DEBUG("h2=" << h2 << " exist=" << exist << " failed=" << failed);
 		return h2;
 	}
 	uint32_t victimPosition = rand()%2 ? h1 : h2;
@@ -1019,7 +1015,7 @@ uint32_t CuckooHashTable::Insert(int ilen, int dlen, uint64_t dkey, int firstChi
 	hash18bit = hash18bit & ((1<<18) - 1);
 	
 	uint32_t pos = ReservePositionForInsert(ilen, dkey, hash18bit, exist, failed, generation);
-	DEBUG("pos=" << pos << " exist=" << exist << " failed=" << failed);
+	// DEBUG("pos=" << pos << " exist=" << exist << " failed=" << failed);
 	if (!exist && !failed)
 	{
 		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild, generation);

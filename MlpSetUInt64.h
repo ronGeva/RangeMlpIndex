@@ -217,15 +217,17 @@ struct CuckooHashTableNode
 	
 	void SetChildNum(int k)
 	{
-		if (k <= 8)
+		if (k <= 8 && k != 0)
 		{
-			uint32_t hashVal = hash;
-			hashVal &= 0xffe3ffffU;
-			hashVal |= ((k-1) << 18);
-			hash = hashVal;
+			hash &= 0xffe3ffffU;
+			hash |= ((k-1) << 18);
 		}
 
-		SET_NUM_CHILDREN(generation, k - 1);
+		if (k != 0) {
+			SET_NUM_CHILDREN(generation, k - 1);
+		} else {
+			SET_NUM_CHILDREN(generation, 0);
+		}
 	}
 	
 	void Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen);
