@@ -807,8 +807,8 @@ uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 	
 void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generation)
 {
-    target->generation.store(generation, std::memory_order_seq_cst);
-	this->generation.store(generation, std::memory_order_seq_cst);
+    target->SetGeneration(generation);
+	this->SetGeneration(generation);
     target->CopyWithoutGeneration(*this);
 	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
 	{
@@ -826,7 +826,7 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 	if (targetOffset != 4)
 	{
 		// Safely copy atomic fields using proper atomic operations instead of memcpy
-		target[targetOffset-4].generation.store(this[offset-4].generation.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		target[targetOffset-4].generation.store((this[offset-4].generation.load()));
 		target[targetOffset-4].hash = this[offset-4].hash;
 		target[targetOffset-4].minKey = this[offset-4].minKey;
 		target[targetOffset-4].childMap.store(this[offset-4].childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
@@ -868,7 +868,7 @@ void CuckooHashTableNode::RelocateBitMap()
 	{
 		// Safely copy atomic fields using proper atomic operations instead of memcpy
 		this[offset-4].hash = this[oldOffset-4].hash;
-		this[offset-4].generation.store(this[oldOffset-4].generation.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		this[offset-4].SetGeneration(this[oldOffset-4].LoadGeneration());
 		this[offset-4].minKey = this[oldOffset-4].minKey;
 		this[offset-4].childMap.store(this[oldOffset-4].childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
 	}
@@ -1172,7 +1172,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 	{		
 		if ((ht[allPositions1[len]].hash & 0xf803ffffU) == expectedHash[len]) 
 		{
-			if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation)
+			if (ht[allPositions1[len]].LoadGeneration() > generation)
 			{
 				return -1;
 			}
@@ -1180,7 +1180,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 		}
 		if ((ht[allPositions2[len]].hash & 0xf803ffffU) == expectedHash[len])
 		{
-			if (ht[allPositions2[len]].generation.load(std::memory_order_seq_cst) > generation)
+			if (ht[allPositions2[len]].LoadGeneration() > generation)
 			{
 				return -1;
 			}
@@ -1207,8 +1207,8 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 		len = 7;
 		for (; len >= 2; len --)
 		{		
-			DEBUG("generation1=" << ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) << " pos=" << allPositions1[len]);
-			DEBUG("generation2=" << ht[allPositions2[len]].generation.load(std::memory_order_seq_cst) << " pos=" << allPositions2[len]);
+			DEBUG("generation1=" << ht[allPositions1[len]].LoadGeneration() << " pos=" << allPositions1[len]);
+			DEBUG("generation2=" << ht[allPositions2[len]].LoadGeneration() << " pos=" << allPositions2[len]);
 		}
 		return 2;
 	}
@@ -1225,7 +1225,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 	int shiftLen = 64 - 8 * (len + 1);
 	if (unlikely((ht[allPositions1[len]].minKey >> shiftLen) != (key >> shiftLen))) goto _slowpath;
 	// Check generation after accessing minKey to ensure data read is still valid
-	if (ht[allPositions1[len]].generation.load(std::memory_order_seq_cst) > generation) return -1;
+	if (ht[allPositions1[len]].LoadGeneration() > generation) return -1;
 
 	idxLen = len + 1;
 #ifdef ENABLE_STATS

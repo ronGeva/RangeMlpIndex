@@ -11,7 +11,7 @@ static std::mutex debug_print_mutex;
 // #define TRACE
 
 #define NUM_CHILDREN(generation) ((generation >> 24) & 0xff) + 1
-#define SET_NUM_CHILDREN(generation, k) (generation.store((generation.load(std::memory_order_seq_cst) & 0x00ffffff) | (k << 24), std::memory_order_seq_cst))
+#define SET_NUM_CHILDREN(generation, k) (generation.store((generation.load() & 0x00ffffff) | (k << 24)))
 
 #ifndef TRACE
 #define DEBUG(msg)
