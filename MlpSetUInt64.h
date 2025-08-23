@@ -427,6 +427,9 @@ public:
                  uint32_t* expectedHash,
 				 std::atomic<uint32_t>& cur_generation);
 	
+	// Debug function to check for nodes with non-zero generation (bits 0-23)
+	void ResetGenerations();
+	
 	// hash table array pointer
 	//
 	CuckooHashTableNode* ht;
