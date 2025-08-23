@@ -427,9 +427,8 @@ public:
                  uint32_t* expectedHash,
 				 std::atomic<uint32_t>& cur_generation);
 	
-	// Debug function to check for nodes with non-zero generation (bits 0-23)
 	void ResetGenerations();
-	
+
 	// hash table array pointer
 	//
 	CuckooHashTableNode* ht;
@@ -501,6 +500,8 @@ std::atomic<uint32_t> cur_generation;
 	// The promise can be resolved via Promise.Resolve() to get the lower_bound
 	//
 	MlpSet::Promise LowerBound(uint64_t value);
+
+	void ResetGenerationsIfNeeded(uint32_t &generation);
 	
 	// For debug purposes only
 	//

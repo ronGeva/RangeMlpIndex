@@ -1347,6 +1347,16 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 	assert(!ht[victimPosition].IsOccupied());
 }
 
+void MlpSet::ResetGenerationsIfNeeded(uint32_t &cur_gen)
+{
+	if (likely((cur_gen & 0x00ffffff) != 0)) {
+		return;
+	}
+	cur_gen = 1;
+	cur_generation = 0;
+	m_hashTable.ResetGenerations();
+}
+
 void CuckooHashTable::ResetGenerations()
 {
 	uint64_t count = 0;
@@ -1358,7 +1368,7 @@ void CuckooHashTable::ResetGenerations()
 			count++;
 		}
 	}
-	std::cout << "Cleared " << count << " nodes with non-zero generation" << std::endl;
+	std::cout << "Cleared " << count << " nodes with non-zero generation" << std::endl;	
 }
 
 MlpSet::MlpSet() 
@@ -1568,12 +1578,8 @@ bool MlpSet::Remove(uint64_t value)
 	}
 
 	uint32_t cur_gen = cur_generation.load() + 1;
-	if ((cur_gen & 0x00ffffff) == 0)
-	{
-		cur_generation = 0;
-		m_hashTable.ResetGenerations();
-		cur_gen = 1;
-	}
+	
+	ResetGenerationsIfNeeded(cur_gen);
 
 	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
 
@@ -1638,12 +1644,8 @@ bool MlpSet::Insert(uint64_t value)
 {
 	assert(m_hasCalledInit);
 	uint32_t cur_gen = cur_generation.load() + 1;
-	if ((cur_gen & 0x00ffffff) == 0)
-	{
-		cur_generation = 0;
-		m_hashTable.ResetGenerations();
-		cur_gen = 1;
-	}
+	ResetGenerationsIfNeeded(cur_gen);
+	
 	DEBUG("insert=" << value << " cur_gen=" << cur_gen);
 	int lcpLen;
 	// Handle LCP < 2 case first
