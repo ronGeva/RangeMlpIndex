@@ -84,7 +84,7 @@ struct CuckooHashTableNode
 	void CopyWithoutGeneration(const CuckooHashTableNode& other) {
 		hash = other.hash;
 		minKey = other.minKey;
-		childMap.store(other.childMap.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+		childMap.store(other.childMap.load());
 		SetChildNum(other.GetChildNum());
 	}
 
@@ -92,9 +92,9 @@ struct CuckooHashTableNode
 	void Clear()
 	{
 		hash = 0;
-		generation.store(0, std::memory_order_seq_cst);
+		generation.store(0);
 		minKey = 0;
-		childMap.store(0, std::memory_order_seq_cst);
+		childMap.store(0);
 	}
 
 	void SetGeneration(uint32_t new_generation)
@@ -216,12 +216,12 @@ struct CuckooHashTableNode
 	
 	int GetChildNum() const
 	{
-		if (NUM_CHILDREN(generation.load(std::memory_order_seq_cst)) <= 7)
+		if (NUM_CHILDREN(generation.load()) <= 7)
 		{
 			return 1 + ((hash >> 18) & 7);
 		}
 
-		return NUM_CHILDREN(generation.load(std::memory_order_seq_cst));
+		return NUM_CHILDREN(generation.load());
 	}
 	
 	void SetChildNum(int k)
