@@ -1553,14 +1553,6 @@ bool MlpSet::Remove(uint64_t value)
 	uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
 
-	uint32_t cur_gen = cur_generation.load() + 1;
-	if ((cur_gen & 0x00ffffff) == 0)
-	{
-		cur_generation = 0;
-		m_hashTable.ResetGenerations();
-		cur_gen = 1;
-	}
-
 	int lcpLen = m_hashTable.QueryLCPInternal(value, 
 		ilen /*out*/, 
 		allPositions1 /*out*/, 
@@ -1573,6 +1565,14 @@ bool MlpSet::Remove(uint64_t value)
 		// If the LCP is less than 8, we cannot remove it
 		// because it is not a full key in the hash table
 		return false;
+	}
+
+	uint32_t cur_gen = cur_generation.load() + 1;
+	if ((cur_gen & 0x00ffffff) == 0)
+	{
+		cur_generation = 0;
+		m_hashTable.ResetGenerations();
+		cur_gen = 1;
 	}
 
 	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
@@ -1628,6 +1628,8 @@ bool MlpSet::Remove(uint64_t value)
 			remove_child_offset = ilen;
 		}
 	}
+
+	cur_generation.store(cur_gen);
 
 	return true;
 }
