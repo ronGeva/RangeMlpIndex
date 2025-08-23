@@ -92,7 +92,7 @@ struct CuckooHashTableNode
 	void Clear()
 	{
 		hash = 0;
-	    SET_NUM_CHILDREN(0);
+	    SET_NUM_CHILDREN(generation,0);
 		minKey = 0;
 		childMap.store(0);
 	}
