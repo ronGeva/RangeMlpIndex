@@ -92,7 +92,7 @@ struct CuckooHashTableNode
 	void Clear()
 	{
 		hash = 0;
-		generation.store(0);
+	    SET_NUM_CHILDREN(0);
 		minKey = 0;
 		childMap.store(0);
 	}
@@ -397,7 +397,7 @@ public:
 
 	// Removes a node from the hash table
 	// Returns true if the node is removed, false if it does not exist
-	bool Remove(int ilen, uint64_t key);
+	bool Remove(int ilen, uint64_t key, uint32_t generation);
 
 	// Single point lookup on a key that is supposed to exist
 	//
