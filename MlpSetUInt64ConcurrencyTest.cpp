@@ -51,8 +51,8 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
             bool inserted = ms.Insert(v);
             ReleaseAssert(inserted);
             // Additional fence to ensure Insert completion is visible before count update
-            // std::atomic_thread_fence(std::memory_order_seq_cst);
-            insertedCount.store(v + 1, std::memory_order_seq_cst);
+            // std::atomic_thread_fence();
+            insertedCount.store(v + 1);
             // DEBUG("inserted " << v);
 // #ifndef NDEBUG
             // if (((v + 1) % 200000ULL) == 0ULL)
@@ -61,7 +61,7 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
             // }
 // #endif
         }
-        stopReaders.store(true, std::memory_order_seq_cst);
+        stopReaders.store(true);
         auto t1 = std::chrono::steady_clock::now();
         writerTimeNs = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     });
@@ -81,13 +81,13 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
             std::mt19937_64 rng(static_cast<uint64_t>(t) + 123456789ULL);
             uint64_t localCount = 0;
             auto t0 = std::chrono::steady_clock::now();
-            while (!stopReaders.load(std::memory_order_acquire))
+            while (!stopReaders.load())
             {
-                uint64_t c = insertedCount.load(std::memory_order_seq_cst);
+                uint64_t c = insertedCount.load();
                 if (c == 0) { continue; }
 
                 // Additional fence to ensure we see all writes that happened before the count update
-                // std::atomic_thread_fence(std::memory_order_seq_cst);
+                // std::atomic_thread_fence();
 
                 uint64_t key = rng() % c; // choose a key guaranteed inserted
 
@@ -185,7 +185,7 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesReverseOrder)
             ReleaseAssert(inserted);
             
             // Update total count of inserted keys
-            insertedCount.store(i + 1, std::memory_order_seq_cst);
+            insertedCount.store(i + 1);
             
             // DEBUG("inserted " << v);
 // #ifndef NDEBUG
@@ -195,7 +195,7 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesReverseOrder)
             // }
 // #endif
         }
-        stopReaders.store(true, std::memory_order_seq_cst);
+        stopReaders.store(true);
         auto t1 = std::chrono::steady_clock::now();
         writerTimeNs = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     });
@@ -215,9 +215,9 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesReverseOrder)
             std::mt19937_64 rng(static_cast<uint64_t>(t) + 123456789ULL);
             uint64_t localCount = 0;
             auto t0 = std::chrono::steady_clock::now();
-            while (!stopReaders.load(std::memory_order_acquire))
+            while (!stopReaders.load())
             {
-                uint64_t c = insertedCount.load(std::memory_order_seq_cst);
+                uint64_t c = insertedCount.load();
                 if (c == 0) { continue; }
 
                 // Pick a random offset from the highest keys that have been inserted
