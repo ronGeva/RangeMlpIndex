@@ -1040,7 +1040,7 @@ uint32_t CuckooHashTable::Lookup(int ilen, uint64_t ikey, bool& found)
 	return -1;
 }
 
-bool CuckooHashTable::Remove(int ilen, uint64_t key)
+bool CuckooHashTable::Remove(int ilen, uint64_t key, uint32_t generation)
 {
 	assert(m_hasCalledInit);
 
@@ -1059,11 +1059,13 @@ bool CuckooHashTable::Remove(int ilen, uint64_t key)
 
 	if (ht[h1].IsEqual(expectedHash, shiftLen, shiftedMinKey))
 	{
+		ht[h1].SetGeneration(generation);
 		ht[h1].Clear();
 		return true;
 	}
 	if (ht[h2].IsEqual(expectedHash, shiftLen, shiftedMinKey))
 	{
+		ht[h2].SetGeneration(generation);
 		ht[h2].Clear();
 		return true;
 	}
@@ -1552,13 +1554,19 @@ bool MlpSet::Remove(uint64_t value)
 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
 
 	uint32_t cur_gen = cur_generation.load() + 1;
+	if ((cur_gen & 0x00ffffff) == 0)
+	{
+		cur_generation = 0;
+		m_hashTable.ResetGenerations();
+		cur_gen = 1;
+	}
 
 	int lcpLen = m_hashTable.QueryLCPInternal(value, 
 		ilen /*out*/, 
 		allPositions1 /*out*/, 
 		allPositions2 /*out*/, 
 		expectedHash /*out*/,
-		cur_gen);
+		UINT32_MAX);
 
 	if (lcpLen < 8)
 	{
@@ -1570,7 +1578,7 @@ bool MlpSet::Remove(uint64_t value)
 	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
 
 	// Remove the node from the hash table
-	bool res = m_hashTable.Remove(ilen, value);
+	bool res = m_hashTable.Remove(ilen, value, cur_gen);
 	assert(res);
 
 	bool remove_child = true;
@@ -1595,6 +1603,7 @@ bool MlpSet::Remove(uint64_t value)
 		// anyway
 		if (value == m_hashTable.ht[pos].minKey && opt_successor.has_value())
 		{
+			m_hashTable.ht[pos].SetGeneration(cur_gen);
 			m_hashTable.ht[pos].minKey = *opt_successor;
 		}
 
@@ -1606,6 +1615,7 @@ bool MlpSet::Remove(uint64_t value)
 		const int child = (value >> (64 - 8 * remove_child_offset)) % 256;
 		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
 		{
+			m_hashTable.ht[pos].SetGeneration(cur_gen);
 			bool zero_children = m_hashTable.ht[pos].RemoveChild(child);
 			remove_child = false;
 			if (!zero_children)
