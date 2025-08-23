@@ -1359,6 +1359,20 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 	assert(!ht[victimPosition].IsOccupied());
 }
 
+void CuckooHashTable::ResetGenerations()
+{
+	uint64_t count = 0;
+	for (uint32_t i = 0; i <= htMask; i++)
+	{
+		if (ht[i].GetOccupyFlag() == 2 && ht[i].LoadGeneration() > 0)
+		{
+			ht[i].SetGeneration(0);
+			count++;
+		}
+	}
+	std::cout << "Cleared " << count << " nodes with non-zero generation" << std::endl;
+}
+
 MlpSet::MlpSet() 
 	: m_memoryPtr(nullptr)
 	, m_allocatedSize(-1)

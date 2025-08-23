@@ -35,10 +35,10 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesFixedThreads)
     
     
     // 1 writer + 7 readers
-    const uint64_t kNumInserts = 200000; // keep runtime reasonable in CI
+    const uint64_t kNumInserts = 1 << 28; // keep runtime reasonable in CI
 
     MlpSetUInt64::MlpSet ms;
-    ms.Init(kNumInserts + 1024);
+    ms.Init(kNumInserts);
 
     std::atomic<uint64_t> insertedCount{0};
     std::atomic<bool> stopReaders{false};
@@ -166,10 +166,10 @@ TEST(MlpSetUInt64, ConcurrentInsertAndQueriesReverseOrder)
     
     
     // 1 writer + 7 readers
-    const uint64_t kNumInserts = 2000; // keep runtime reasonable in CI
+    const uint64_t kNumInserts = 1 << 28; // keep runtime reasonable in CI
 
     MlpSetUInt64::MlpSet ms;
-    ms.Init(kNumInserts + 1024);
+    ms.Init(kNumInserts);
 
     std::atomic<uint64_t> insertedCount{0};
     std::atomic<bool> stopReaders{false};
