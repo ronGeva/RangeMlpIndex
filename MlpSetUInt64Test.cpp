@@ -1215,13 +1215,16 @@ std::vector<uint64_t> read_from_file(const char* filename)
 	return numbers;
 }
 
-void generate_input(std::vector<uint64_t>& insertions, std::vector<uint64_t>& removals)
+void generate_input(std::vector<uint64_t>& insertions, std::vector<uint64_t>& removals, bool use_predefined)
 {
-	insertions = read_from_file("insertion_order.dat");
-	removals = read_from_file("removal_order.dat");
-	if (!insertions.empty() && !removals.empty())
+	if (use_predefined)
 	{
-		return;
+		insertions = read_from_file("insertion_order.dat");
+		removals = read_from_file("removal_order.dat");
+		if (!insertions.empty() && !removals.empty())
+		{
+			return;
+		}
 	}
 
 	// A C++ standard library class for obtaining true random numbers from the operating system.
@@ -1263,10 +1266,10 @@ void generate_input(std::vector<uint64_t>& insertions, std::vector<uint64_t>& re
 	write_to_file(removals, "removal_order.dat");
 }
 
-TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
+void MlpSetRemoveSingleThreadedRemove(bool use_predefined_input)
 {
 	std::vector<uint64_t> insertions, removals;
-	generate_input(insertions, removals);
+	generate_input(insertions, removals, use_predefined_input);
 
 	MlpSetUInt64::MlpSet s;
     s.Init(4194304);
@@ -1305,6 +1308,16 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
 		s.Remove(num);
 		ReleaseAssert(!s.Exist(num));
 	}
+}
+
+TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
+{
+	MlpSetRemoveSingleThreadedRemove(false);
+}
+
+TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandomPredefined)
+{
+	MlpSetRemoveSingleThreadedRemove(true);
 }
 
 TEST(MlpSetUInt64, WorkloadD_16M_Dep)
