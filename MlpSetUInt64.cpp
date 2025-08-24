@@ -1588,7 +1588,6 @@ bool MlpSet::Remove(uint64_t value)
 	assert(res);
 
 	bool remove_child = true;
-	uint8_t remove_child_offset;
 	for (ilen--; ilen > 2; ilen--)
 	{
 		// find the right position
@@ -1613,12 +1612,8 @@ bool MlpSet::Remove(uint64_t value)
 			m_hashTable.ht[pos].minKey = *opt_successor;
 		}
 
-		if (remove_child)
-		{
-			remove_child_offset = m_hashTable.ht[pos].GetFullKeyLen() + 1;
-		}
-		
-		const int child = (value >> (64 - 8 * remove_child_offset)) % 256;
+		uint8_t children_offset = m_hashTable.ht[pos].GetFullKeyLen() + 1;
+		const int child = (value >> (64 - 8 * children_offset)) % 256;
 		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
 		{
 			m_hashTable.ht[pos].SetGeneration(cur_gen);
@@ -1631,7 +1626,6 @@ bool MlpSet::Remove(uint64_t value)
 			// delete the pointer to it from its parent as we move up the tree
 			m_hashTable.ht[pos].Clear();
 			remove_child = true;
-			remove_child_offset = ilen;
 		}
 	}
 
