@@ -1495,7 +1495,7 @@ void MlpSet::Init(uint32_t maxSetSize)
 
 void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
 {
-	if (successor.has_value() && ((*successor >> 54) != (value >> 54)))
+	if (successor.has_value() && ((*successor >> 54) == (value >> 54)))
 	{
 		// successor occupies the same L1 bit
 		return;
@@ -1518,7 +1518,7 @@ void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
 
 void MlpSet::ClearL2Cache(uint64_t value, std::optional<uint64_t> successor)
 {
-	if (successor.has_value() && ((*successor >> 46) != (value >> 46)))
+	if (successor.has_value() && ((*successor >> 46) == (value >> 46)))
 	{
 		// successor occupies the same L2 bit
 		return;
