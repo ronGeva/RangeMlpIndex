@@ -518,11 +518,13 @@ std::atomic<uint32_t> cur_generation;
 private:
 	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation);
 
+	void ClearRootCache(uint64_t value, std::optional<uint64_t> successor);
+
 	void ClearL1Cache(uint64_t value, std::optional<uint64_t> successor);
 
 	void ClearL2Cache(uint64_t value, std::optional<uint64_t> successor);
 
-	std::optional<uint64_t> ClearL1AndL2Caches(uint64_t value);
+	std::optional<uint64_t> ClearLowLevelCaches(uint64_t value);
 	
 	// we mmap memory all at once, hold the pointer to the memory chunk
 	// TODO: this needs to changed after we support hash table resizing 

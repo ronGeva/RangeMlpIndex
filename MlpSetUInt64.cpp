@@ -1539,7 +1539,30 @@ void MlpSet::ClearL2Cache(uint64_t value, std::optional<uint64_t> successor)
 	m_treeDepth2[value >> 46] &= ~(uint64_t(1) << (h24bits % 64));
 }
 
-std::optional<uint64_t> MlpSet::ClearL1AndL2Caches(uint64_t value)
+void MlpSet::ClearRootCache(uint64_t value, std::optional<uint64_t> successor)
+{
+	if (successor.has_value() && ((*successor >> 56) == (value >> 56)))
+	{
+		// successor occupies the same root bit
+		return;
+	}
+
+	bool found;
+	uint64_t smallest_in_range = LowerBound((value >> 56) << 56, found);
+	if (found && smallest_in_range < value)
+	{
+		// there's an item in the data structure smaller than value but bigger
+		// than the minimal number that would have those high bits, meaning
+		// it occupies the same root bit
+		return;
+	}
+
+	// nullify the bit from the root cache
+	uint64_t h8bits = value >> 56;
+	m_root[value >> 62] &= ~(uint64_t(1) << (h8bits % 64));
+}
+
+std::optional<uint64_t> MlpSet::ClearLowLevelCaches(uint64_t value)
 {
 	bool found_successor = false;
 	uint64_t successor = LowerBound(value + 1, found_successor);
@@ -1550,6 +1573,7 @@ std::optional<uint64_t> MlpSet::ClearL1AndL2Caches(uint64_t value)
 		opt_successor = successor;
 	}
 
+	ClearRootCache(value, opt_successor);
 	ClearL1Cache(value, opt_successor);
 	ClearL2Cache(value, opt_successor);
 	return opt_successor;
@@ -1581,7 +1605,7 @@ bool MlpSet::Remove(uint64_t value)
 	
 	ResetGenerationsIfNeeded(cur_gen);
 
-	std::optional<uint64_t> opt_successor = ClearL1AndL2Caches(value);
+	std::optional<uint64_t> opt_successor = ClearLowLevelCaches(value);
 
 	// Remove the node from the hash table
 	bool res = m_hashTable.Remove(ilen, value, cur_gen);
