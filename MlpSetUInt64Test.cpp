@@ -1320,6 +1320,51 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandomPredefined)
 	MlpSetRemoveSingleThreadedRemove(true);
 }
 
+TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedFirstLayers)
+{
+	// remove an element that is in the L1/L2 cache and make sure everything still
+	// works as expected
+
+	MlpSetUInt64::MlpSet s;
+	s.Init(4194304);
+
+	const uint64_t value = (1LL << 63);
+	// This value is guaranteed to be placed into the lower level cache, since
+	// it is the first value inserted with those high bits
+	s.Insert(value);
+	s.Insert(value + 1);
+
+	// insert a bunch of values which share 0 bytes of similarity to value
+	s.Insert(5);
+	s.Insert(50);
+	s.Insert(7);
+	s.Insert(65);
+
+	// choose another value to search lower bound for which also share no
+	// byte similarity to any of the inserted values
+	const uint64_t value_to_search = value >> 32;
+	bool found;
+	uint64_t result1 = s.LowerBound(value_to_search, found);
+	ReleaseAssert(found);
+
+	s.Remove(value);
+
+	uint64_t result2 = s.LowerBound(value_to_search, found);
+	ReleaseAssert(found);
+
+	// before the removal we expect to find the inserted value
+	ReleaseAssert(result1 == value);
+
+	// after the removal we expect to find the next biggest value
+	ReleaseAssert(result2 == value + 1);
+
+	s.Remove(value + 1);
+	s.LowerBound(value_to_search, found);
+
+	// There should be no more values with such a lower bound
+	ReleaseAssert(!found);
+}
+
 TEST(MlpSetUInt64, WorkloadD_16M_Dep)
 {
 	printf("Generating workload WorkloadD 16M ENFORCE dep..\n");
