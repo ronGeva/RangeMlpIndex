@@ -247,6 +247,10 @@ void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash1
 	
 int CuckooHashTableNode::FindNeighboringEmptySlot()
 {
+	#ifdef EXTERNAL_BITMAP_ONLY
+	return 0;
+	#endif
+
 	int lowbits = reinterpret_cast<uintptr_t>(this) & 63;
 	if (lowbits < 32)
 	{	
