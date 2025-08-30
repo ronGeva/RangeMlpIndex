@@ -265,11 +265,11 @@ struct CuckooHashTableNode
 	//
 	void AddChild(int child, uint32_t generation);
 
-	void RevertToInternalBitmap();
+	void RevertToInternalBitmap(std::function<void(void*)> addDeallocationFunc);
 
 	// Remove a child, must exist
 	// Returns whether we now have 0 children
-	bool RemoveChild(int child);
+	bool RemoveChild(int child, std::function<void(void*)> addDeallocationFunc);
 
 	// for debug only, get list of all children in sorted order
 	//
@@ -545,6 +545,13 @@ private:
 		char padding[CACHE_LINE_SIZE - sizeof(std::atomic<uint32_t>)];
 	};
 
+	struct AwaitingDeallocation {
+		void* ptr;
+		uint32_t generation;
+		AwaitingDeallocation(void* buffer, uint32_t current_generation):
+			ptr(buffer), generation(current_generation) {}
+	};
+
 	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation);
 
 	void ClearRootCache(uint64_t value, std::optional<uint64_t> successor);
@@ -562,6 +569,9 @@ private:
 
 	void ResetReaderGeneration(int cpu);
 
+	void AddDeallocation(void* ptr);
+
+	void DeallocatePending();
 	
 	// we mmap memory all at once, hold the pointer to the memory chunk
 	// TODO: this needs to changed after we support hash table resizing 
@@ -587,6 +597,7 @@ private:
 	std::vector<char> m_readerGenerationsBuffer;
 	PerCpuInteger* m_readerGenerations;
 
+	std::vector<AwaitingDeallocation> m_awaitingDeallocations;
 	
 #ifndef NDEBUG
 	bool m_hasCalledInit;

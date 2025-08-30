@@ -606,7 +606,7 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 	SetChildNum(k+1);
 }
 
-void CuckooHashTableNode::RevertToInternalBitmap()
+void CuckooHashTableNode::RevertToInternalBitmap(std::function<void(void*)> addDeallocationFunc)
 {
 	assert(!IsUsingInternalChildMap());
 
@@ -622,6 +622,9 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 				tmpChildMap |= i;
 			}
 		}
+
+		addDeallocationFunc(reinterpret_cast<void*>(childMap.load()));
+
 		childMap.store(tmpChildMap);
 		goto _leave;
 	}
@@ -664,7 +667,7 @@ _leave:
 	hash &= ~(7 << 21); // mark the node as using internal child map
 }
 
-bool CuckooHashTableNode::RemoveChild(int child)
+bool CuckooHashTableNode::RemoveChild(int child, std::function<void(void*)> addDeallocationFunc)
 {
 	assert(IsNode() && !IsLeaf());
 	assert(0 <= child && child <= 255);
@@ -703,7 +706,7 @@ bool CuckooHashTableNode::RemoveChild(int child)
 	{
 		// we are using external bitmap, so we need to convert it to internal map
 		// before removing the child
-		RevertToInternalBitmap();
+		RevertToInternalBitmap(addDeallocationFunc);
 	}
 
 	SetChildNum(amountOfChildren - 1);
@@ -1602,6 +1605,11 @@ void MlpSet::ResetReaderGeneration(int cpu)
 	m_readerGenerations[cpu].value.store(UINT32_MAX);
 }
 
+void MlpSet::AddDeallocation(void* ptr)
+{
+	m_awaitingDeallocations.push_back(AwaitingDeallocation(ptr, cur_generation.load()));
+}
+
 ReaderGenerationGuard MlpSet::ReaderGeneration()
 {
 	uint32_t gen = cur_generation.load();
@@ -1614,6 +1622,29 @@ ReaderGenerationGuard MlpSet::ReaderGeneration()
 								 {
 									ResetReaderGeneration(cpu);
 								 });
+}
+
+void MlpSet::DeallocatePending()
+{
+	uint32_t readers_min_generation = UINT32_MAX;
+	for (size_t i = 0; i < m_readerGenerationsBuffer.size() / sizeof(PerCpuInteger); i++)
+	{
+		PerCpuInteger& generation = m_readerGenerations[i];
+		readers_min_generation = min(readers_min_generation, generation.value.load());
+	}
+
+	size_t i = 0;
+	for (i = 0; i < m_awaitingDeallocations.size(); i++)
+	{
+		if (m_awaitingDeallocations[i].generation >= readers_min_generation)
+			break;
+
+		// deallocate the buffer
+		delete[] m_awaitingDeallocations[i].ptr;
+	}
+
+	// delete all the pending allocations that were freed
+	m_awaitingDeallocations.erase(m_awaitingDeallocations.begin(), m_awaitingDeallocations.begin() + i);
 }
 
 bool MlpSet::Remove(uint64_t value)
@@ -1676,7 +1707,7 @@ bool MlpSet::Remove(uint64_t value)
 		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
 		{
 			m_hashTable.ht[pos].SetGeneration(cur_gen);
-			bool zero_children = m_hashTable.ht[pos].RemoveChild(child);
+			bool zero_children = m_hashTable.ht[pos].RemoveChild(child, [this](void* ptr){AddDeallocation(ptr);});
 			remove_child = false;
 			if (!zero_children)
 				continue;
