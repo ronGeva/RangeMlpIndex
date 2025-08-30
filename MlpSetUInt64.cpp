@@ -1099,11 +1099,12 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
                                             uint32_t* allPositions1, 
                                             uint32_t* allPositions2, 
                                             uint32_t* expectedHash,
-											std::atomic<uint32_t>& cur_generation)
+											std::function<ReaderGenerationGuard(void)> generation_getter)
 {
 	while (true)
 	{
-		uint32_t generation = cur_generation.load();
+		ReaderGenerationGuard generation_guard = generation_getter();
+		uint32_t generation = generation_guard.generation();
 		// LockGuard lock(&displacement_mutex, true);
 		int ret = QueryLCPInternal(key, idxLen, allPositions1, allPositions2, expectedHash, generation);
 		if (ret >= 0)
@@ -1491,6 +1492,16 @@ void MlpSet::Init(uint32_t maxSetSize)
 	memset(m_memoryPtr, 0, m_allocatedSize);
 
 	cur_generation.store(0);
+
+	int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	ReleaseAssert(num_cpus > 0);
+
+	m_readerGenerationsBuffer.resize(sizeof(PerCpuInteger) * num_cpus);
+	m_readerGenerations = reinterpret_cast<PerCpuInteger*>(m_readerGenerationsBuffer.data());
+	for (size_t i = 0; i < num_cpus; i++)
+	{
+		m_readerGenerations[i].value.store(UINT32_MAX);
+	}
 }
 
 void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
@@ -1579,6 +1590,32 @@ std::optional<uint64_t> MlpSet::ClearLowLevelCaches(uint64_t value)
 	return opt_successor;
 }
 
+uint32_t MlpSet::IncrementGeneration()
+{
+	uint32_t cur_gen = cur_generation.load() + 1;
+	ResetGenerationsIfNeeded(cur_gen);
+	return cur_gen;
+}
+
+void MlpSet::ResetReaderGeneration(int cpu)
+{
+	m_readerGenerations[cpu].value.store(UINT32_MAX);
+}
+
+ReaderGenerationGuard MlpSet::ReaderGeneration()
+{
+	uint32_t gen = cur_generation.load();
+
+	int cpu = sched_getcpu();
+	m_readerGenerations[cpu].value.store(gen);
+
+	return ReaderGenerationGuard(gen,
+								 [this, cpu]()
+								 {
+									ResetReaderGeneration(cpu);
+								 });
+}
+
 bool MlpSet::Remove(uint64_t value)
 {
 	uint32_t ilen;
@@ -1601,9 +1638,7 @@ bool MlpSet::Remove(uint64_t value)
 		return false;
 	}
 
-	uint32_t cur_gen = cur_generation.load() + 1;
-	
-	ResetGenerationsIfNeeded(cur_gen);
+	uint32_t cur_gen = IncrementGeneration();
 
 	std::optional<uint64_t> opt_successor = ClearLowLevelCaches(value);
 
@@ -1655,14 +1690,16 @@ bool MlpSet::Remove(uint64_t value)
 
 	cur_generation.store(cur_gen);
 
+	DeallocatePending();
+
 	return true;
 }
 
 bool MlpSet::Insert(uint64_t value)
 {
 	assert(m_hasCalledInit);
-	uint32_t cur_gen = cur_generation.load() + 1;
-	ResetGenerationsIfNeeded(cur_gen);
+
+	uint32_t cur_gen = IncrementGeneration();
 	
 	DEBUG("insert=" << value << " cur_gen=" << cur_gen);
 	int lcpLen;
@@ -1915,7 +1952,7 @@ bool MlpSet::Exist(uint64_t value)
 		                              allPositions1 /*out*/, 
 		                              allPositions2 /*out*/, 
 		                              expectedHash /*out*/,
-									  cur_generation /*generation*/);
+									  [this]() {return ReaderGeneration();} /*generation*/);
 	if (lcpLen != 8) {
 		DEBUG("lcpLen=" << lcpLen << " value=" << value);
 	}
@@ -2158,7 +2195,8 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 	// DEBUG("LowerBound start");
 	do {
 		// LockGuard lock(&displacement_mutex, true);
-		uint32_t generation = cur_generation.load();
+		ReaderGenerationGuard generation_guard = ReaderGeneration();
+		uint32_t generation = generation_guard.generation();
 		Promise p = LowerBoundInternal(value, found, generation);
 		if (!found) {
 			return 0xffffffffffffffffULL;
