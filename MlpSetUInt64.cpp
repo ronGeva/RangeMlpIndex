@@ -697,7 +697,7 @@ bool CuckooHashTableNode::RemoveChild(int child, std::function<void(void*)> addD
 			smaller = childMap.load() & ((uint64_t(1) << ((pos-2)*8)) - 1);
 		}
 		childMap.store(smaller | larger);
-		goto _Leave; // TODO: this doesn't work, make it work
+		goto _Leave;
 	}
 
 	BitMapSet(child, false);
