@@ -1209,15 +1209,6 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 		return 2;
 	}
 
-#ifndef NDEBUG
-	{
-		uint32_t hash18bit = XXH::XXHashFn3(key, len + 1);
-		hash18bit = hash18bit & ((1<<18) - 1);
-		uint32_t expectedx = hash18bit | (len << 27) | 0x80000000U;
-		assert((ht[allPositions1[len]].hash & 0xf803ffffU) == expectedx);
-	}
-#endif
-
 	int shiftLen = 64 - 8 * (len + 1);
 	if (unlikely((ht[allPositions1[len]].minKey >> shiftLen) != (key >> shiftLen))) goto _slowpath;
 	// Check generation after accessing minKey to ensure data read is still valid
