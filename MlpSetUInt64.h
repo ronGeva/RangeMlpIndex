@@ -485,6 +485,10 @@ std::atomic<uint32_t> cur_generation;
 	struct Stats
 	{
 		uint32_t m_lowerBoundParentPathStepsHistogram[8];
+
+		// amount of pending de-allocations which weren't freed immediately
+		// counted for every call to remove
+		uint64_t m_numbersOfPendingDeallocationPostponed;
 		Stats();
 		void ClearStats();
 		void ReportStats();

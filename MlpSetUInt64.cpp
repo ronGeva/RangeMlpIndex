@@ -1397,6 +1397,7 @@ MlpSet::~MlpSet()
 MlpSet::Stats::Stats()
 {
 	memset(m_lowerBoundParentPathStepsHistogram, 0, sizeof m_lowerBoundParentPathStepsHistogram);
+	m_numbersOfPendingDeallocationPostponed = 0;
 }
 		
 void MlpSet::Stats::ClearStats()
@@ -1637,7 +1638,12 @@ void MlpSet::DeallocatePending()
 	for (i = 0; i < m_awaitingDeallocations.size(); i++)
 	{
 		if (m_awaitingDeallocations[i].generation >= readers_min_generation)
+		{
+			#ifdef ENABLE_STATS
+			stats.m_numbersOfPendingDeallocationPostponed++;
+			#endif
 			break;
+		}
 
 		// deallocate the buffer
 		delete[] m_awaitingDeallocations[i].ptr;
