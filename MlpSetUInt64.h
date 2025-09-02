@@ -217,22 +217,11 @@ struct CuckooHashTableNode
 	
 	int GetChildNum() const
 	{
-		if (NUM_CHILDREN(generation.load()) <= 7)
-		{
-			return 1 + ((hash >> 18) & 7);
-		}
-
 		return NUM_CHILDREN(generation.load());
 	}
 	
 	void SetChildNum(int k)
 	{
-		if (k <= 8 && k != 0)
-		{
-			hash &= 0xffe3ffffU;
-			hash |= ((k-1) << 18);
-		}
-
 		if (k != 0) {
 			SET_NUM_CHILDREN(generation, k - 1);
 		}
