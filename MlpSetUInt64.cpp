@@ -1622,6 +1622,19 @@ ReaderGenerationGuard MlpSet::ReaderGeneration()
 
 void MlpSet::DeallocatePending()
 {
+	// We'll wait for this amount of pending allocations before we attempt
+	// to clear them.
+	//
+	// This will in turn reduce the contention the removing thread has with
+	// the reader threads, while still maintaining a relatively small amount
+	// of allocated unused buffers.
+	if (m_awaitingDeallocations.size() < PENDING_ALLOCATIONS_CLEAR_BUFFER)
+		return;
+
+	// Go through the current readers' generations.
+	// Note that this entail contention with the readers for the cache lines
+	// of those addresses, so we must minimize the amount of time this code
+	// is being executed.
 	uint32_t readers_min_generation = UINT32_MAX;
 	for (size_t i = 0; i < m_readerGenerationsBuffer.size() / sizeof(PerCpuInteger); i++)
 	{
@@ -1637,6 +1650,14 @@ void MlpSet::DeallocatePending()
 			#ifdef ENABLE_STATS
 			stats.m_numbersOfPendingDeallocationPostponed++;
 			#endif
+
+			// The allocations are pushed back into the m_waitingDeallocation vector
+			// which means they appear in it in increasing generation order.
+			//
+			// Therefore, if we ran into an allocation which conflicts with
+			// some reader's current generation, all of the next awaiting allocations
+			// are guaranteed to conflict with it as well.
+			// We can exit then.
 			break;
 		}
 

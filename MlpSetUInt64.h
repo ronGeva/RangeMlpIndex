@@ -542,6 +542,8 @@ std::atomic<uint32_t> cur_generation;
 #endif
 
 private:
+	static constexpr size_t PENDING_ALLOCATIONS_CLEAR_BUFFER = 10;
+
 	static constexpr size_t CACHE_LINE_SIZE = 64;
 
 	struct PerCpuInteger {
