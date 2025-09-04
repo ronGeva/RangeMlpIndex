@@ -285,6 +285,49 @@ struct CuckooHashTableNode
 	// Relocate its internal bitmap to another position
 	//
 	void RelocateBitMap();
+
+	 // For leaf nodes only: manage the node type using bitmap bits
+    enum LeafType : uint8_t {
+        LEAF_SINGLE = 0,      // 000
+        LEAF_RANGE_START = 1, // 001
+        LEAF_RANGE_END = 2,   // 010
+    };
+    
+    // Set the leaf type (only valid for leaves with fullKeyLen == 8)
+    void SetLeafType(LeafType type) {
+        assert(GetFullKeyLen() == 8);  // Must be a leaf
+        
+        // Modify hash in place - clear bits 21-23 and set new value
+        hash = (hash & ~(0x7U << 21)) | (static_cast<uint32_t>(type) << 21);
+    }
+    
+    // Get the leaf type (only valid for leaves)
+    LeafType GetLeafType()  {
+        assert(GetFullKeyLen() == 8);  // Must be a leaf
+        return static_cast<LeafType>((hash >> 21) & 0x7);
+    }
+    
+    // For RANGE_START and SINGLE leaves: store/retrieve data pointer
+    void SetLeafData(void* data) {
+        assert(GetFullKeyLen() == 8);
+        childMap.store(reinterpret_cast<uint64_t>(data));
+    }
+    
+    void* GetLeafData()  {
+        assert(GetFullKeyLen() == 8);
+        return reinterpret_cast<void*>(childMap.load());
+    }
+    
+    // For RANGE_END leaves: store/retrieve the range start key
+    void SetRangeStart(uint64_t startKey) {
+        assert(GetFullKeyLen() == 8 && GetLeafType() == LEAF_RANGE_END);
+        childMap.store(startKey);
+    }
+
+    uint64_t GetRangeStart()  {
+        assert(GetFullKeyLen() == 8 && GetLeafType() == LEAF_RANGE_END);
+        return childMap.load();
+    }
 };
 
 static_assert(sizeof(CuckooHashTableNode) == 24, "size of node should be 24");
@@ -515,7 +558,7 @@ std::atomic<uint32_t> cur_generation;
 	void ReportStats();
 #endif
 
-private:
+protected:
 	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation);
 
 	void ClearRootCache(uint64_t value, std::optional<uint64_t> successor);
@@ -551,6 +594,14 @@ private:
 	bool m_hasCalledInit;
 #endif
 };
+
+
+
+
+
+
+
+
 
 }	// namespace MlpSetUInt64
  

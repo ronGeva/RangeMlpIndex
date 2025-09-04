@@ -1,1425 +1,291 @@
-#include "common.h"
-#include "MlpSetUInt64.h"
-#include "StupidTrie/Stupid64bitIntegerTrie.h"
-#include "WorkloadInterface.h"
-#include "WorkloadA.h"
-#include "WorkloadB.h"
-#include "WorkloadC.h"
-#include "WorkloadD.h"
-#include "gtest/gtest.h"
-#include <random>
-#include <fstream>
+#include "MlpSetUInt64Range.h"
+#include <iostream>
+#include <cassert>
+#include <vector>
+#include <cstdlib>
 
-namespace {
+using namespace MlpSetUInt64;
+using namespace std;
 
-// Test of correctness of CuckooHash related logic
-// This is a vitro test (not acutally a trie tree, just random data)
-//
-TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
-{
-	const int HtSize = 1 << 26;
-	uint64_t allocatedArrLen = uint64_t(HtSize + 20) * sizeof(MlpSetUInt64::CuckooHashTableNode) + 256;
-	void* allocatedPtr = mmap(NULL, 
-		                      allocatedArrLen, 
-		                      PROT_READ | PROT_WRITE, 
-		                      MAP_PRIVATE | MAP_ANONYMOUS, 
-		                      -1 /*fd*/, 
-		                      0 /*offset*/);
-	ReleaseAssert(allocatedPtr != MAP_FAILED);
-	Auto(
-		int result = munmap(allocatedPtr, allocatedArrLen);
-		ReleaseAssert(result == 0);
-	);
-	
-	memset(allocatedPtr, 0, allocatedArrLen);
-	
-	MlpSetUInt64::CuckooHashTable ht;
-	
-	{
-		uintptr_t x = reinterpret_cast<uintptr_t>(allocatedPtr);
-		x += 6 * sizeof(MlpSetUInt64::CuckooHashTableNode);
-		x = x / 128 * 128;
-		ht.Init(reinterpret_cast<MlpSetUInt64::CuckooHashTableNode*>(x), HtSize - 1);
-	}
-	
-	vector<StupidUInt64Trie::TrieNodeDescriptor> data;
-	
-	// gen data
-	//
-	{
-		printf("Generating data..\n");
-		int remainingNodes = 0.45 * HtSize;	// 45% load factor
-		int numNodesForTenPercent = remainingNodes / 10;
-		data.reserve(remainingNodes);
-		set<uint64_t> S[9];
-		while (remainingNodes > 0)
-		{
-			int ilen;
-			uint64_t key;
-			// generate a node
-			//
-			while (1)
-			{
-				ilen = rand() % 6 + 3;
-				key = 0;
-				rep(i, 1, ilen)
-				{
-					key = key * 256 + rand() % 256;
-				}
-				if (S[ilen].count(key) == 0)
-				{
-					break;
-				}
-			}
-			S[ilen].insert(key);
-			int dlen = rand() % (9 - ilen) + ilen;
-			remainingNodes--;
-			
-			rep(i, ilen+1, 8)
-			{
-				key = key * 256 + rand() % 256;
-			}
-			
-			// generate some childs
-			//
-			int numChilds = (rand() % 3 == 0) ? (8 + rand() % 20) : (rand() % 8 + 1);
-			if (dlen == 8)
-			{
-				numChilds = 0;
-			}
-			bool exist[256]; 
-			memset(exist, 0, 256);
-			rep(i, 1, numChilds) 
-			{
-				exist[rand() % 256] = 1;
-			}
-			int actualNumChilds = 0;
-			rep(i, 0, 255)
-			{
-				if (exist[i])
-				{
-					actualNumChilds++;
-				}
-			}
-			if (actualNumChilds > 8) 
-			{
-				remainingNodes--;
-			}
-			
-			data.push_back(StupidUInt64Trie::TrieNodeDescriptor(ilen, dlen, key, actualNumChilds));
-			rep(i, 0, 255)
-			{
-				if (exist[i])
-				{
-					data.back().AddChild(i);
-				}
-			}
-			if (remainingNodes % numNodesForTenPercent == 0)
-			{
-				printf("%d%% complete\n", 100 - remainingNodes / numNodesForTenPercent * 10);
-			}
-		}
-		printf("Data generation complete. %d records generated\n", int(data.size()));
-	}
-	
-	// insert data, check each row is as expected right after its insertion
-	//
-	printf("Inserting data..\n");
-	rept(row, data)
-	{
-		int childCount = row->children.size();
-		int firstChild = -1;
-		if (childCount > 0)
-		{
-			firstChild = row->children[0];
-		}
-		bool exist, failed;
-		uint32_t pos = ht.Insert(row->ilen, row->dlen, row->minv, firstChild, exist, failed, 0);
-		ReleaseAssert(!exist);
-		ReleaseAssert(!failed);
-		ReleaseAssert(ht.ht[pos].GetIndexKeyLen() == row->ilen);
-		ReleaseAssert(ht.ht[pos].GetFullKeyLen() == row->dlen);
-		ReleaseAssert(ht.ht[pos].GetFullKey() == row->minv);
-		rep(i, 1, childCount - 1)
-		{
-			ht.ht[pos].AddChild(row->children[i], 0);
-		}
-		if (childCount > 0)
-		{
-			vector<int> ch = ht.ht[pos].GetAllChildren();
-			ReleaseAssert(ch.size() == row->children.size());
-			rep(i, 0, int(ch.size()) - 1)
-			{
-				ReleaseAssert(ch[i] == row->children[i]);
-			}
-		}
-	}
-	printf("Insertion complete.\n");
-#ifdef ENABLE_STATS
-	printf("Cuckoo hash table stats: %u node moves %u bitmap moves\n", 
-		   ht.stats.m_movedNodesCount, ht.stats.m_relocatedBitmapsCount);
-#endif
+#define TEST(name) cout << "\n=== Testing: " << name << " ===" << endl;
+#define ASSERT(cond) do { \
+    if (!(cond)) { \
+        cout << "FAILED: " << #cond << " at line " << __LINE__ << endl; \
+        exit(1); \
+    } \
+} while(0)
+#define PASS() cout << "  ✓ Passed" << endl;
 
-	// sanity check whole hash table
-	//
-	{
-		printf("Sanity check hash table..\n");
-		int nodeCount = 0;
-		int bitmapCount = 0;
-		int bitmapCount2 = 0;
-		int extMapCount = 0;
-		rep(i, -3, HtSize + 2)
-		{
-			if (ht.ht[i].IsOccupied())
-			{
-				if (ht.ht[i].IsNode())
-				{
-					nodeCount++;
-					if (!ht.ht[i].IsUsingInternalChildMap())
-					{
-						bitmapCount++;
-						if (ht.ht[i].IsExternalPointerBitMap())
-						{
-							extMapCount++;
-						}
-						else
-						{
-							int offset = (ht.ht[i].hash >> 21) & 7;
-							ReleaseAssert(ht.ht[i+offset-4].IsOccupied() && !ht.ht[i+offset-4].IsNode());
-						}
-					}
-				}
-				else
-				{
-					bitmapCount2++;
-				}
-			}
-		}
-		ReleaseAssert(bitmapCount == bitmapCount2 + extMapCount);
-		ReleaseAssert(nodeCount == data.size());
-		printf("Hash table sanity check complete.\n");
-		printf("Hash table bitmap stats: %d bitmaps %d external bitmaps\n", bitmapCount, extMapCount);
-	}
-	
-	// Lookup for each row of data again and make sure everything is as expected
-	//
-	printf("Performing lookup for all inserted rows..\n");
-	rept(row, data)
-	{
-		bool found;
-		uint32_t pos = ht.Lookup(row->ilen, row->minv, found);
-		ReleaseAssert(found);
-		ReleaseAssert(ht.ht[pos].GetIndexKeyLen() == row->ilen);
-		ReleaseAssert(ht.ht[pos].GetFullKeyLen() == row->dlen);
-		ReleaseAssert(ht.ht[pos].GetFullKey() == row->minv);
-		int childCount = row->children.size();
-		if (childCount > 0)
-		{
-			vector<int> ch = ht.ht[pos].GetAllChildren();
-			ReleaseAssert(ch.size() == row->children.size());
-			rep(i, 0, int(ch.size()) - 1)
-			{
-				ReleaseAssert(ch[i] == row->children[i]);
-			}
-		}
-		else
-		{
-			ReleaseAssert(ht.ht[pos].IsLeaf());
-		}
-	}
-	printf("Hash table lookup check complete.\n");
+void test_single_points() {
+    TEST("Single Point Operations");
+    
+    MlpRangeTree tree;
+    tree.Init(100000);
+    
+    // Store some single values
+    int data1 = 42;
+    int data2 = 84;
+    int data3 = 168;
+    
+    cout << "  Inserting single points: 100, 200, 300" << endl;
+    ASSERT(tree.Store(100, &data1));
+    ASSERT(tree.Store(200, &data2));
+    ASSERT(tree.Store(300, &data3));
+    
+    // Verify they exist
+    cout << "  Checking loads..." << endl;
+    ASSERT(tree.Load(100) == &data1);
+    ASSERT(tree.Load(200) == &data2);
+    ASSERT(tree.Load(300) == &data3);
+    
+    // Verify gaps return nullptr
+    ASSERT(tree.Load(99) == nullptr);
+    ASSERT(tree.Load(101) == nullptr);
+    ASSERT(tree.Load(150) == nullptr);
+    ASSERT(tree.Load(250) == nullptr);
+    
+    PASS();
 }
 
-// Test of correctness of CuckooHash.QueryLCP() function
-// This is a vitro test (not acutally a trie tree, just random data)
-//
-TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
-{
-	const int HtSize = 1 << 15;
-	uint64_t allocatedArrLen = uint64_t(HtSize + 20) * sizeof(MlpSetUInt64::CuckooHashTableNode) + 256;
-	void* allocatedPtr = mmap(NULL, 
-		                      allocatedArrLen, 
-		                      PROT_READ | PROT_WRITE, 
-		                      MAP_PRIVATE | MAP_ANONYMOUS, 
-		                      -1 /*fd*/, 
-		                      0 /*offset*/);
-	ReleaseAssert(allocatedPtr != MAP_FAILED);
-	Auto(
-		int result = munmap(allocatedPtr, allocatedArrLen);
-		ReleaseAssert(result == 0);
-	);
-	
-	memset(allocatedPtr, 0, allocatedArrLen);
-	
-	MlpSetUInt64::CuckooHashTable ht;
-	
-	{
-		uintptr_t x = reinterpret_cast<uintptr_t>(allocatedPtr);
-		x += 6 * sizeof(MlpSetUInt64::CuckooHashTableNode);
-		x = x / 128 * 128;
-		ht.Init(reinterpret_cast<MlpSetUInt64::CuckooHashTableNode*>(x), HtSize - 1);
-	}
-	
-	const int numQueries = 1 << 15;
-	uint64_t* q = new uint64_t[numQueries];
-	pair<int, uint64_t>* expectedAnswers = new pair<int, uint64_t>[numQueries];
-	pair<int, uint64_t>* actualAnswers = new pair<int, uint64_t>[numQueries];
-	ReleaseAssert(q != nullptr);
-	ReleaseAssert(expectedAnswers != nullptr);
-	ReleaseAssert(actualAnswers != nullptr);
-	Auto(delete [] q);
-	Auto(delete [] expectedAnswers);
-	Auto(delete [] actualAnswers);
-	
-	rep(i,0,numQueries-1)
-	{
-		actualAnswers[i].first = 0;
-		actualAnswers[i].second = 0;
-	}
-	
-	{
-		printf("Generating data..\n");
-		int totalNodes = 0.45 * HtSize;	// 45% load factor
-		map<uint64_t, uint64_t> S[9];
-		rep(currentNode, 0, totalNodes - 1)
-		{
-			int ilen;
-			uint64_t key;
-			// generate a node
-			//
-			while (1)
-			{
-				ilen = rand() % 6 + 3;
-				key = 103;
-				rep(i, 2, ilen)
-				{
-					key = key * 256 + rand() % 20;
-				}
-				if (S[ilen].count(key) == 0)
-				{
-					break;
-				}
-			}
-			int dlen = rand() % (9 - ilen) + ilen;
-
-			uint64_t fullKey = key;
-			rep(i, ilen+1, 8)
-			{
-				fullKey = fullKey * 256 + rand() % 20;
-			}
-			
-			S[ilen][key] = fullKey;
-			
-			bool exist, failed;
-			uint32_t pos = ht.Insert(ilen, dlen, fullKey, (dlen == 8 ? -1 : 233) /*firstChild*/, exist, failed, 0);
-			ReleaseAssert(!exist);
-			ReleaseAssert(!failed);
-			ReleaseAssert(ht.ht[pos].GetIndexKeyLen() == ilen);
-			ReleaseAssert(ht.ht[pos].GetFullKeyLen() == dlen);
-			ReleaseAssert(ht.ht[pos].GetFullKey() == fullKey);
-			
-			if (currentNode % (totalNodes / 10) == 0)
-			{
-				printf("%d%% complete\n", currentNode / (totalNodes / 10) * 10);
-				printf("current node: %d total nodes: %d\n", currentNode, totalNodes);
-			}
-		}
-		printf("Generating query..\n");
-		// generate query
-		//
-		rep(i,0,numQueries-1)
-		{
-			uint64_t key = 103;
-			rep(k,2,8)
-			{
-				key = key * 256 + rand() % 20;
-			}
-			if (rand() % 10 == 0)
-			{
-				key = 103 * 256 + rand() % 20;
-				rep(k,3,8)
-				{
-					key = key * 256 + rand() % 256;
-				}
-			}
-			q[i] = key;
-			expectedAnswers[i] = make_pair(2, uint64_t(-1));
-			repd(len, 8, 3)
-			{
-				if (S[len].count(q[i] >> (64 - len*8)))
-				{	
-					uint64_t v = S[len][q[i] >> (64 - len*8)];
-					expectedAnswers[i].second = v;
-					uint64_t xorValue = q[i] ^ v;
-					if (!xorValue) 
-					{	
-						expectedAnswers[i].first = 8;
-					}
-					else
-					{
-						int z = __builtin_clzll(xorValue);
-						expectedAnswers[i].first = z / 8;
-					}
-					break;
-				}
-			}
-			if (i % (numQueries / 10) == 0)
-			{
-				printf("%d%% complete\n", i / (numQueries / 10) * 10);
-			}
-		}
-		printf("Data generation complete. %d records generated, %d query generated\n", totalNodes, numQueries);
-	}
-	
-	printf("Executing queries..\n");
-	{
-		std::atomic<uint32_t> cur_generation;
-		AutoTimer timer;
-		rep(i,0,numQueries - 1)
-		{
-			uint32_t ilen;
-			uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
-			uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
-			uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
-			uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
-			int lcpLen = ht.QueryLCP(q[i], 
-			                         ilen /*out*/, 
-			                         allPositions1 /*out*/, 
-			                         allPositions2 /*out*/, 
-			                         expectedHash /*out*/,
-									 cur_generation /*generation*/);
-			actualAnswers[i].first = lcpLen;
-			if (lcpLen == 2)
-			{
-				actualAnswers[i].second = uint64_t(-1);
-			}
-			else
-			{
-				uint32_t pos = allPositions1[ilen - 1];
-				actualAnswers[i].second = ht.ht[pos].minKey;
-			}
-		}
-	}
-	
-	printf("Query completed.\n");
-#ifdef ENABLE_STATS
-	printf("Hash table stats: %u slowpath count\n", ht.stats.m_slowpathCount);
-#endif
-
-	printf("Validating answers..\n");
-	{
-		int cnt[10];
-		memset(cnt, 0, sizeof(int) * 10);
-		rep(i,0,numQueries - 1)
-		{
-			ReleaseAssert(actualAnswers[i] == expectedAnswers[i]);
-			cnt[actualAnswers[i].first]++;
-		}
-		printf("Test complete.\n");
-		printf("Query result stats:\n");
-		rep(i,2,8)
-		{
-			printf("LCP = %d: %d\n", i, cnt[i]);
-		}
-	}
+void test_basic_range() {
+    TEST("Basic Range Operations");
+    
+    MlpRangeTree tree;
+    tree.Init(100000);
+    
+    int data = 999;
+    
+    cout << "  Inserting range [1000, 2000]" << endl;
+    ASSERT(tree.StoreRange(1000, 2000, &data));
+    
+    cout << "  Checking points in range..." << endl;
+    ASSERT(tree.Load(1000) == &data);  // Start
+    ASSERT(tree.Load(1500) == &data);  // Middle
+    ASSERT(tree.Load(2000) == &data);  // End
+    
+    cout << "  Checking points outside range..." << endl;
+    ASSERT(tree.Load(999) == nullptr);   // Before
+    ASSERT(tree.Load(2001) == nullptr);  // After
+    
+    PASS();
 }
 
-// An incomprehensive assert
-// It checks that every node in StupidTrie exists and has the same information in MlpSet
-// but it does not check the other direction
-//
-void AssertTreeShapeEqualA(StupidUInt64Trie::Trie& st, MlpSetUInt64::MlpSet& ms, bool printDetail)
-{
-	vector<StupidUInt64Trie::TrieNodeDescriptor> nodeList;
-	st.DumpData(nodeList);
-	rept(it, nodeList)
-	{
-		int ilen = it->ilen;
-		int dlen = it->dlen;
-		uint64_t key = it->minv;
-		ReleaseAssert((ms.GetRootPtr()[(key >> 56) / 64].load() & (uint64_t(1) << ((key >> 56) % 64))) != 0);
-		ReleaseAssert((ms.GetLv1Ptr()[(key >> 48) / 64].load() & (uint64_t(1) << ((key >> 48) % 64))) != 0);
-		ReleaseAssert((ms.GetLv2Ptr()[(key >> 40) / 64].load() & (uint64_t(1) << ((key >> 40) % 64))) != 0);
-		if (ilen >= 4)
-		{
-			bool found;
-			uint32_t pos = ms.GetHtPtr()->Lookup(3, key, found);
-			ReleaseAssert(found);
-		}
-		if (ilen >= 3)
-		{
-			bool found;
-			uint32_t pos = ms.GetHtPtr()->Lookup(ilen, key, found);
-			ReleaseAssert(found);
-			ReleaseAssert(ms.GetHtPtr()->ht[pos].GetIndexKeyLen() == ilen);
-			ReleaseAssert(ms.GetHtPtr()->ht[pos].GetFullKeyLen() == dlen);
-			ReleaseAssert(ms.GetHtPtr()->ht[pos].minKey == key);
-			vector<int> ch = ms.GetHtPtr()->ht[pos].GetAllChildren();
-			ReleaseAssert(ch.size() == it->children.size());
-			rep(i, 0, int(ch.size()) - 1)
-			{
-				ReleaseAssert(ch[i] == it->children[i]);
-			}
-		}
-	}
-	if (printDetail)
-	{
-		printf("%d nodes in trie tree\n", int(nodeList.size()));
-	}
+void test_range_overwrite() {
+    TEST("Range Overwrite");
+    
+    MlpRangeTree tree;
+    tree.Init(100000);
+    
+    int data1 = 111;
+    int data2 = 222;
+    
+    cout << "  Inserting range [100, 200]" << endl;
+    ASSERT(tree.StoreRange(100, 200, &data1));
+    ASSERT(tree.Load(150) == &data1);
+    
+    cout << "  Overwriting with range [150, 250] (partial overlap)" << endl;
+    ASSERT(tree.StoreRange(150, 250, &data2));
+    
+    cout << "  Checking that entire old range is gone..." << endl;
+    ASSERT(tree.Load(100) == nullptr);  // Old range completely removed
+    ASSERT(tree.Load(149) == nullptr);
+    
+    cout << "  Checking new range exists..." << endl;
+    ASSERT(tree.Load(150) == &data2);
+    ASSERT(tree.Load(200) == &data2);
+    ASSERT(tree.Load(250) == &data2);
+    
+    PASS();
 }
 
-// A correctness test for MlpSet.Insert()
-// Inserts a bunch of elements, verify the whole trie shape is as expected after each insertion
-//
-TEST(MlpSetUInt64, MlpSetInsertStepByStepCorrectness)
-{
-	const int N = 14000;
-	vector< vector<int> > choices;
-	choices.resize(8);
-	rep(i,0,7)
-	{
-		int sz = (i <= 1) ? 2 : 5;
-		rep(j,0,sz-1)
-		{
-			int x = rand() % 256;
-			choices[i].push_back(x);
-		}
-	}
-	StupidUInt64Trie::Trie st;
-	MlpSetUInt64::MlpSet ms;
-	ms.Init(N + 1000);
-	rep(steps, 0, N-1)
-	{
-		uint64_t value = 0;
-		rep(i, 0, 7)
-		{
-			value = value * 256 + choices[i][rand() % choices[i].size()];
-		}
-		bool st_inserted = st.Insert(value);
-		bool ms_inserted = ms.Insert(value);
-		ReleaseAssert(st_inserted == ms_inserted);
-		AssertTreeShapeEqualA(st, ms, (steps % (N / 10) == 0) /*printDetail*/);
-		if (steps % (N / 10) == 0)
-		{
-			printf("%d%% completed\n", steps / (N / 10) * 10);
-		}
-	}
+void test_erase() {
+    TEST("Erase Operations");
+    
+    MlpRangeTree tree;
+    tree.Init(100000);
+    
+    int data = 777;
+    
+    cout << "  Inserting range [500, 600]" << endl;
+    ASSERT(tree.StoreRange(500, 600, &data));
+    
+    cout << "  Erasing by key 550 (middle of range)" << endl;
+    ASSERT(tree.Erase(550));
+    
+    cout << "  Checking entire range is gone..." << endl;
+    ASSERT(tree.Load(500) == nullptr);
+    ASSERT(tree.Load(550) == nullptr);
+    ASSERT(tree.Load(600) == nullptr);
+    
+    PASS();
 }
 
-// A larger correctness test for MlpSet.Insert()
-// Inserts a bunch of elements, verify the whole trie shape is as expected in the end
-//
-TEST(MlpSetUInt64, MlpSetInsertCorrectness)
-{
-	const int N = 16000000;
-	vector< vector<int> > choices;
-	choices.resize(8);
-	rep(i,0,7)
-	{
-		int sz = (i <= 1) ? 6 : 12;
-		set<int> s;
-		rep(j,0,sz-1)
-		{
-			int x;
-			while (1)
-			{
-				x = rand() % 256;
-				if (!s.count(x)) break;
-			}
-			s.insert(x);
-			choices[i].push_back(x);
-		}
-	}
-	
-	uint64_t* values = new uint64_t[N];
-	ReleaseAssert(values != nullptr);
-	Auto(delete [] values);
-	
-	printf("Generating data N = %d..\n", N);
-	rep(k,0,N-1) 
-	{
-		uint64_t x = 0;
-		rep(i, 0, 7)
-		{
-			x = x * 256 + choices[i][rand() % choices[i].size()];
-		}
-		values[k] = x;
-	}
-	
-	StupidUInt64Trie::Trie st;
-	
-	printf("Stupid trie insertion..\n");
-	int numDistinct = 0;
-	rep(i,0,N-1)
-	{
-		bool x = st.Insert(values[i]);
-		if (x) numDistinct++;
-		if (i % (N / 10) == 0)
-		{
-			printf("%d%% complete\n", i / (N / 10) * 10);
-		}
-	}
-	printf("Insertion complete. %d distinct elements\n", numDistinct);
-	
-	MlpSetUInt64::MlpSet ms;
-	ms.Init(N + 1000);
-	
-	printf("MlpSet insertion..\n");
-	{
-		AutoTimer timer;
-		int numDistinctMlpTrie = 0;
-		rep(i,0,N-1)
-		{
-			bool x = ms.Insert(values[i]);
-			if (x) numDistinctMlpTrie++;
-		}
-		ReleaseAssert(numDistinct == numDistinctMlpTrie);
-	}
-	
-	printf("MlpSet insertion complete. Validating..\n");
-	AssertTreeShapeEqualA(st, ms, true /*printDetail*/);
-	printf("Test complete.\n");
-#ifdef ENABLE_STATS
-	printf("Hash table stats: %u slowpath, %u node moves, %u bitmap relocation\n", 
-	       ms.GetHtPtr()->stats.m_slowpathCount, 
-	       ms.GetHtPtr()->stats.m_movedNodesCount, 
-	       ms.GetHtPtr()->stats.m_relocatedBitmapsCount);
-#endif
+void test_mixed_operations() {
+    TEST("Mixed Single Points and Ranges");
+    
+    MlpRangeTree tree;
+    tree.Init(100000);
+    
+    int data1 = 1;
+    int data2 = 2;
+    int data3 = 3;
+    int data4 = 4;
+    
+    cout << "  Creating mixed structure:" << endl;
+    cout << "    Point at 50" << endl;
+    ASSERT(tree.Store(50, &data1));
+    
+    cout << "    Range [100, 200]" << endl;
+    ASSERT(tree.StoreRange(100, 200, &data2));
+    
+    cout << "    Point at 250" << endl;
+    ASSERT(tree.Store(250, &data3));
+    
+    cout << "    Range [300, 400]" << endl;
+    ASSERT(tree.StoreRange(300, 400, &data4));
+    
+    cout << "  Verifying structure..." << endl;
+    ASSERT(tree.Load(50) == &data1);
+    ASSERT(tree.Load(150) == &data2);
+    ASSERT(tree.Load(250) == &data3);
+    ASSERT(tree.Load(350) == &data4);
+    
+    cout << "  Checking gaps..." << endl;
+    ASSERT(tree.Load(75) == nullptr);
+    ASSERT(tree.Load(225) == nullptr);
+    ASSERT(tree.Load(275) == nullptr);
+    
+    PASS();
 }
 
-// Vitro test for CuckooHashTableNode::LowerBoundChild
-//
-TEST(MlpSetUInt64, VitroHtNodeLowerBoundChildCorrectness)
-{
-#ifndef NDEBUG
-	const int numTests = 1000000;
-#else
-	const int numTests = 10000000;
-#endif
-	printf("Vitro test for CuckooHashTableNode::LowerBoundChild..\n");
-	{
-		printf("Testing internal child list case..\n");
-		rep(iter, 0, numTests)
-		{
-			int numChild = rand() % 8 + 1;
-			set<int> existed;
-			MlpSetUInt64::CuckooHashTableNode nd;
-			memset(&nd, 0, sizeof(MlpSetUInt64::CuckooHashTableNode));
-			{
-				int x = rand() % 256;
-				nd.Init(1, 1, 0, 0, x, 0);
-				existed.insert(x);
-			}
-			rep(k, 1, numChild-1)
-			{
-				int x;
-				while (1)
-				{
-					x = rand() % 256;
-					if (!existed.count(x)) break;
-				}
-				existed.insert(x);
-				nd.AddChild(x, 0);
-			}
-			ReleaseAssert(nd.IsUsingInternalChildMap());
-			rep(i, 0, 255)
-			{
-				set<int>::iterator it = existed.lower_bound(i);
-				int expected;
-				if (it == existed.end()) expected = -1; else expected = *it;
-				ReleaseAssert(nd.LowerBoundChild(i) == expected);
-			}
-		}
-	}
-	{
-		printf("Testing bitmap case..\n");
-		rep(iter, 0, numTests)
-		{
-			int numChild = (rand() % 10 == 0) ? (rand() % 248 + 9) : (rand() % 20 + 9);
-			set<int> existed;
-			MlpSetUInt64::CuckooHashTableNode nd[7];
-			memset(nd, 0, sizeof(MlpSetUInt64::CuckooHashTableNode) * 7);
-			{
-				int x = rand() % 256;
-				nd[3].Init(1, 1, 0, 0, x, 0);
-				existed.insert(x);
-			}
-			rep(k, 1, numChild-1)
-			{
-				int x;
-				while (1)
-				{
-					x = rand() % 256;
-					if (!existed.count(x)) break;
-				}
-				existed.insert(x);
-				nd[3].AddChild(x, 0);
-			}
-			ReleaseAssert(!nd[3].IsUsingInternalChildMap() && !nd[3].IsExternalPointerBitMap());
-			rep(i, 0, 255)
-			{
-				set<int>::iterator it = existed.lower_bound(i);
-				int expected;
-				if (it == existed.end()) expected = -1; else expected = *it;
-				ReleaseAssert(nd[3].LowerBoundChild(i) == expected);
-			}
-		}
-	}
-	{
-		printf("Testing pointer bitmap case..\n");
-		rep(iter, 0, numTests)
-		{
-			int numChild = (rand() % 10 == 0) ? (rand() % 248 + 9) : (rand() % 20 + 9);
-			set<int> existed;
-			MlpSetUInt64::CuckooHashTableNode nd[7];
-			memset(nd, 0, sizeof(MlpSetUInt64::CuckooHashTableNode) * 7);
-			rep(k, 0, 6)
-			{
-				if (k != 3)
-				{
-					nd[k].hash = 3U << 30;
-					assert(nd[k].IsOccupied());
-				}
-			}
-			{
-				int x = rand() % 256;
-				nd[3].Init(1, 1, 0, 0, x, 0);
-				existed.insert(x);
-			}
-			rep(k, 1, numChild-1)
-			{
-				int x;
-				while (1)
-				{
-					x = rand() % 256;
-					if (!existed.count(x)) break;
-				}
-				existed.insert(x);
-				nd[3].AddChild(x, 0);
-			}
-			ReleaseAssert(!nd[3].IsUsingInternalChildMap() && nd[3].IsExternalPointerBitMap());
-			rep(i, 0, 255)
-			{
-				set<int>::iterator it = existed.lower_bound(i);
-				int expected;
-				if (it == existed.end()) expected = -1; else expected = *it;
-				ReleaseAssert(nd[3].LowerBoundChild(i) == expected);
-			}
-		}
-	}
+void test_find_next() {
+    TEST("FindNext Operation");
+    
+    MlpRangeTree tree;
+    tree.Init(100000);
+    
+    int data1 = 100;
+    int data2 = 200;
+    
+    cout << "  Setting up: point at 100, range [200, 300]" << endl;
+    ASSERT(tree.Store(100, &data1));
+    ASSERT(tree.StoreRange(200, 300, &data2));
+    
+    uint64_t start, end;
+    void* foundData;
+    
+    cout << "  FindNext from 100 (single point)..." << endl;
+    ASSERT(tree.FindNext(100, start, end, foundData));
+    ASSERT(start == 100);
+    ASSERT(end == 100);  // Single point
+    ASSERT(foundData == &data1);
+    
+    cout << "  FindNext from 200 (range start)..." << endl;
+    ASSERT(tree.FindNext(200, start, end, foundData));
+    ASSERT(start == 200);
+    ASSERT(end == 300);
+    ASSERT(foundData == &data2);
+    
+    cout << "  FindNext from 250 (middle of range)..." << endl;
+    ASSERT(tree.FindNext(250, start, end, foundData));
+    ASSERT(start == 200);
+    ASSERT(end == 300);
+    ASSERT(foundData == &data2);
+    
+    PASS();
 }
 
-// Correctness test for MlpSet.LowerBound()
-// This test mainly tests logic for corner case (first 2 lvls of the tree, which are not stored in hash table)
-//
-TEST(MlpSetUInt64, LowerBoundCornerLogicCorrectness)
-{
-	printf("MlpSet LowerBound Corner logic test..\n");
-	MlpSetUInt64::MlpSet ms;
-	ms.Init(4194304);
-	set<uint64_t> S;
-	rep(iter,0,4000000)
-	{	
-		{
-			uint64_t key = 0;
-			rep(k, 0, 7) key = key * 256 + rand() % 256;
-			bool insExpected = S.insert(key).second;
-			bool insActual = ms.Insert(key);
-			ReleaseAssert(insExpected == insActual);
-		}
-		rep(ts, 0, 8)
-		{
-			uint64_t key = 0;
-			rep(k, 0, 7) key = key * 256 + rand() % 256;
-			set<uint64_t>::iterator it = S.lower_bound(key);
-			bool found;
-			uint64_t ret = ms.LowerBound(key, found);
-			ReleaseAssert(found == (it != S.end()));
-			if (found)
-			{
-				ReleaseAssert(*it == ret);
-			}
-			else
-			{
-				ReleaseAssert(ret == 0xffffffffffffffffULL);
-			}
-		}
-		{
-			uint64_t key = *(--S.end());
-			key++;
-			bool found;
-			uint64_t ret = ms.LowerBound(key, found);
-			ReleaseAssert(!found && ret == 0xffffffffffffffffULL);
-		}
-		if (iter % 400000 == 0)
-		{
-			printf("%d%% completed\n", iter / 400000 * 10);
-		}
-	}
-}
-
-// Correctness test for MlpSet.LowerBound()
-// This test focus more on the hash table part
-//
-TEST(MlpSetUInt64, LowerBoundCorrectness)
-{
-	printf("MlpSet LowerBound test..\n");
-	printf("Inserting elements..\n");
-	MlpSetUInt64::MlpSet ms;
-	ms.Init(4194304);
-	set<uint64_t> S;
-	rep(iter,0,4000000)
-	{	
-		uint64_t key = 0;
-		rep(k, 0, 1) key = key * 256 + rand() % 64 + 32;
-		rep(k, 2, 7) key = key * 256 + rand() % 4 + 48;
-		bool insExpected = S.insert(key).second;
-		bool insActual = ms.Insert(key);
-		ReleaseAssert(insExpected == insActual);
-	}
-	printf("Insertion completed distinct item count = %d\n", int(S.size()));
-	
-	rep(iter,0,40000000)
-	{
-		uint64_t key;
-		if (rand() % 20 == 0)
-		{
-			uint64_t maxv = *(--S.end());
-			uint64_t randv = 0;
-			rep(i,0,7) randv = randv * 256 + rand() % 256;
-			randv %= (0xffffffffffffffffULL - maxv);
-			key = maxv + 1 + randv;
-		}
-		else if (rand() % 4 == 0)
-		{
-			key = 0;
-			rep(k, 0, 7) key = key * 256 + rand() % 256;
-		}
-		else 
-		{
-			int shift = rand() % 4;
-			key = 0;
-			rep(k, 0, 1) key = key * 256 + rand() % 64 + 32;
-			rep(k, 2, 7) key = key * 256 + rand() % 4 + 48 + shift;
-		}
-		set<uint64_t>::iterator it = S.lower_bound(key);
-		bool found;
-		uint64_t ret = ms.LowerBound(key, found);
-		ReleaseAssert(found == (it != S.end()));
-		if (found)
-		{
-			ReleaseAssert(*it == ret);
-		}
-		else
-		{
-			ReleaseAssert(ret == 0xffffffffffffffffULL);
-		}
-		if (iter % 4000000 == 0)
-		{
-			printf("%d%% completed\n", iter / 4000000 * 10);
-		}
-	}
-}
-		
-template<bool enforcedDep>
-void NO_INLINE MlpSetExecuteWorkload(WorkloadUInt64& workload)
-{
-	printf("MlpSet executing workload, enforced dependency = %d\n", (enforcedDep ? 1 : 0));
-	MlpSetUInt64::MlpSet ms;
-	ms.Init(workload.numInitialValues + 1000);
-	
-	printf("MlpSet populating initial values..\n");
-	{
-		AutoTimer timer;
-		rep(i, 0, workload.numInitialValues - 1)
-		{
-			ms.Insert(workload.initialValues[i]);
-		}
-	}
-	
-#ifdef ENABLE_STATS
-	ms.ReportStats();
-	ms.ClearStats();
-#endif
-
-	printf("MlpSet executing workload..\n");
-	{
-		AutoTimer timer;
-		if (enforcedDep)
-		{
-			uint64_t lastAnswer = 0;
-			rep(i, 0, workload.numOperations - 1)
-			{
-				uint32_t x = workload.operations[i].type;
-				x ^= (uint32_t)lastAnswer;
-				WorkloadOperationType type = (WorkloadOperationType)x;
-				uint64_t realKey = workload.operations[i].key ^ lastAnswer;
-				uint64_t answer;
-				switch (type)
-				{
-					case WorkloadOperationType::INSERT:
-					{
-						answer = ms.Insert(realKey);
-						break;
-					}
-					case WorkloadOperationType::EXIST:
-					{
-						answer = ms.Exist(realKey);
-						break;
-					}
-					case WorkloadOperationType::LOWER_BOUND:
-					{
-						bool found;
-						answer = ms.LowerBound(realKey, found);
-						break;
-					}
-				}
-				workload.results[i] = answer;
-				lastAnswer = answer;
-			}
-		}
-		else
-		{
-			rep(i, 0, workload.numOperations - 1)
-			{
-				uint64_t answer;
-				switch (workload.operations[i].type)
-				{
-					case WorkloadOperationType::INSERT:
-					{
-						answer = ms.Insert(workload.operations[i].key);
-						break;
-					}
-					case WorkloadOperationType::EXIST:
-					{
-						answer = ms.Exist(workload.operations[i].key);
-						break;
-					}
-					case WorkloadOperationType::LOWER_BOUND:
-					{
-						bool found;
-						answer = ms.LowerBound(workload.operations[i].key, found);
-						break;
-					}
-				}
-				workload.results[i] = answer;
-			}
-		}
-	}
-	
-#ifdef ENABLE_STATS
-	ms.ReportStats();
-#endif
-
-	printf("MlpSet workload completed.\n");
-}
-
-void NO_INLINE MlpSetExecuteWorkloadPromise(WorkloadUInt64& workload)
-{
-	MlpSetUInt64::MlpSet ms;
-	ms.Init(workload.numInitialValues + 1000);	
-	
-	printf("MlpSet populating initial values..\n");
-	{
-		AutoTimer timer;
-		rep(i, 0, workload.numInitialValues - 1)
-		{
-			ms.Insert(workload.initialValues[i]);
-		}
-	}
-	
-	printf("MlpSet executing workload..\n");
-	{
-		AutoTimer timer;
-		MlpSetUInt64::MlpSet::Promise p = ms.LowerBound(workload.operations[0].key);
-		rep(i, 1, workload.numOperations - 1)
-		{
-			MlpSetUInt64::MlpSet::Promise p2 = ms.LowerBound(workload.operations[i].key);
-			if (p.IsValid())
-			{
-				workload.results[i-1] = p.Resolve();
-			}
-			else
-			{
-				workload.results[i-1] = 0xffffffffffffffffULL;
-			}
-			p = p2;
-		}
-		if (p.IsValid())
-		{
-			workload.results[workload.numOperations - 1] = p.Resolve();
-		}
-		else
-		{
-			workload.results[workload.numOperations - 1] = 0xffffffffffffffffULL;
-		}
-	}
-	
-	printf("MlpSet workload completed.\n");
-}
-
-TEST(MlpSetUInt64, WorkloadA_16M_NoDep)
-{
-	printf("Generating workload WorkloadA 16M NO-ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadA::GenWorkload16M();
-	Auto(workload.FreeMemory());
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<false>(workload);
-	
-	printf("Validating results..\n");
-	uint64_t sum = 0;
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-		sum += workload.results[i];
-	}
-	printf("Finished %d queries %d positives\n", int(workload.numOperations), int(sum));
-}
-
-TEST(MlpSetUInt64, WorkloadA_16M_Dep)
-{
-	printf("Generating workload WorkloadA 16M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadA::GenWorkload16M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	uint64_t sum = 0;
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-		sum += workload.results[i];
-	}
-	printf("Finished %d queries %d positives\n", int(workload.numOperations), int(sum));
-}
-
-TEST(MlpSetUInt64, WorkloadA_80M_Dep)
-{
-	printf("Generating workload WorkloadA 80M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadA::GenWorkload80M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	uint64_t sum = 0;
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-		sum += workload.results[i];
-	}
-	printf("Finished %d queries %d positives\n", int(workload.numOperations), int(sum));
-}
-
-TEST(MlpSetUInt64, WorkloadB_16M_NoDep)
-{
-	printf("Generating workload WorkloadB 16M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadB::GenWorkload16M();
-	Auto(workload.FreeMemory());
-
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<false>(workload);
-	
-	printf("Validating results..\n");
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-	}
-	printf("Finished %d queries\n", int(workload.numOperations));
-}
-
-TEST(MlpSetUInt64, WorkloadB_16M_Dep)
-{
-	printf("Generating workload WorkloadB 16M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadB::GenWorkload16M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-	}
-	printf("Finished %d queries\n", int(workload.numOperations));
-}
-
-TEST(MlpSetUInt64, WorkloadB_16M_Promise)
-{
-	printf("Generating workload WorkloadB 16M (Promise)..\n");
-	WorkloadUInt64 workload = WorkloadB::GenWorkload16M();
-	Auto(workload.FreeMemory());
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkloadPromise(workload);
-	
-	printf("Validating results..\n");
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-	}
-	printf("Finished %d queries\n", int(workload.numOperations));
-}
-
-TEST(MlpSetUInt64, WorkloadB_80M_Dep)
-{
-	printf("Generating workload WorkloadB 80M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadB::GenWorkload80M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-	}
-	printf("Finished %d queries\n", int(workload.numOperations));
-}
-
-TEST(MlpSetUInt64, WorkloadC_16M_Dep)
-{
-	printf("Generating workload WorkloadC 16M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadC::GenWorkload16M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	uint64_t sum = 0;
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-		sum += workload.results[i];
-	}
-	printf("Finished %d queries %d positives\n", int(workload.numOperations), int(sum));
-}
-
-TEST(MlpSetUInt64, WorkloadC_80M_Dep)
-{
-	printf("Generating workload WorkloadC 80M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadC::GenWorkload80M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	uint64_t sum = 0;
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-		sum += workload.results[i];
-	}
-	printf("Finished %d queries %d positives\n", int(workload.numOperations), int(sum));
-}
-
-TEST(MlpSetUInt64, MlpSetRemoveSingleThreaded)
-{
-	MlpSetUInt64::MlpSet s;
-    s.Init(4194304);
-	uint64_t insertionSetSize = 65537; // some prime number
-
-	printf("Inserting %llu elements..\n", insertionSetSize);
-    for (uint64_t i = 0; i < insertionSetSize; i++)
-    {
-		s.Insert(i);
-		// sanity
-		ReleaseAssert(s.Exist(i));
+void test_large_scale() {
+    TEST("Large Scale Operations");
+    
+    MlpRangeTree tree;
+    tree.Init(1000000);
+    
+    cout << "  Inserting 1000 ranges..." << endl;
+    vector<int> data(1000);
+    for (int i = 0; i < 1000; i++) {
+        data[i] = i;
+        uint64_t start = i * 1000;
+        uint64_t end = start + 500;  // Ranges: [0,500], [1000,1500], [2000,2500], ...
+        ASSERT(tree.StoreRange(start, end, &data[i]));
     }
+    
+    cout << "  Verifying some ranges..." << endl;
+    ASSERT(tree.Load(250) == &data[0]);    // In first range
+    ASSERT(tree.Load(1250) == &data[1]);   // In second range
+    ASSERT(tree.Load(999250) == &data[999]); // In last range
+    
+    cout << "  Checking gaps between ranges..." << endl;
+    ASSERT(tree.Load(750) == nullptr);     // Gap between first and second
+    ASSERT(tree.Load(1750) == nullptr);    // Gap between second and third
+    
+    cout << "  Erasing middle range [500000, 500500]..." << endl;
+    ASSERT(tree.Erase(500250));  // Middle of range 500
+    ASSERT(tree.Load(500250) == nullptr);
+    
+    PASS();
+}
 
-    // add another node which will make the tree structure more complex
-    s.Insert(insertionSetSize | (1ULL << 24));
+void test_edge_cases() {
+    TEST("Edge Cases");
+    
+    MlpRangeTree tree;
+    tree.Init(100000);
+    
+    int data1 = 1;
+    int data2 = 2;
+    
+    cout << "  Testing single-element range [100, 100]" << endl;
+    ASSERT(tree.StoreRange(100, 100, &data1));
+    ASSERT(tree.Load(100) == &data1);
+    ASSERT(tree.Load(99) == nullptr);
+    ASSERT(tree.Load(101) == nullptr);
+    
+    cout << "  Testing adjacent ranges [200, 300] and [301, 400]" << endl;
+    ASSERT(tree.StoreRange(200, 300, &data1));
+    ASSERT(tree.StoreRange(301, 400, &data2));
+    ASSERT(tree.Load(300) == &data1);
+    ASSERT(tree.Load(301) == &data2);
+    
+    cout << "  Testing EraseRange with partial overlap" << endl;
+    tree.EraseRange(250, 350);  // Should remove both ranges completely
+    ASSERT(tree.Load(200) == nullptr);
+    ASSERT(tree.Load(300) == nullptr);
+    ASSERT(tree.Load(301) == nullptr);
+    ASSERT(tree.Load(400) == nullptr);
+    
+    PASS();
+}
 
-    // generate a "random" order of values to remove
-    std::vector<uint64_t> values;
-    for (size_t x = 0; x < insertionSetSize; x++)
-    {
-        uint64_t value = (3 * x + 1) % insertionSetSize;
-        values.push_back(value);
+void run_all_tests() {
+    cout << "\n===================================" << endl;
+    cout << "   MlpRangeTree Test Suite" << endl;
+    cout << "===================================" << endl;
+    
+    test_single_points();
+    test_basic_range();
+    test_range_overwrite();
+    test_erase();
+    test_mixed_operations();
+    test_find_next();
+    test_large_scale();
+    test_edge_cases();
+    
+    cout << "\n===================================" << endl;
+    cout << "   ALL TESTS PASSED! 🎉" << endl;
+    cout << "===================================" << endl;
+}
+
+int main(int argc, char** argv) {
+    try {
+        run_all_tests();
+    } catch (const exception& e) {
+        cout << "\nException caught: " << e.what() << endl;
+        return 1;
+    } catch (...) {
+        cout << "\nUnknown exception caught!" << endl;
+        return 1;
     }
-
-    for (uint64_t i: values)
-    {
-		s.Remove(i);
-		ReleaseAssert(!s.Exist(i));
-    }
+    
+    return 0;
 }
-
-void write_to_file(const std::vector<uint64_t>& numbers, const char* filename)
-{
-    // Open the file in binary mode for writing. std::ios::binary prevents text-mode translations.
-    std::ofstream output_file(filename, std::ios::out | std::ios::binary);
-
-    // Check if the file was opened successfully.
-    if (!output_file.is_open()) {
-        std::cerr << "Error: Could not open file " << filename << " for writing." << std::endl;
-        return;
-    }
-
-    // Write the entire vector's content to the file in a single operation.
-    // random_numbers.data() gets a pointer to the raw data buffer.
-    // random_numbers.size() * sizeof(unsigned long long) gives the total size in bytes.
-    output_file.write(reinterpret_cast<const char*>(numbers.data()),
-					  numbers.size() * sizeof(unsigned long long));
-
-    // Close the file stream.
-    output_file.close();
-}
-
-std::vector<uint64_t> read_from_file(const char* filename)
-{
-    std::ifstream input_file(filename, std::ios::in | std::ios::binary | std::ios::ate);
-
-    if (!input_file.is_open()) {
-        return {};
-    }
-    // Get the size of the file in bytes.
-    std::streampos file_size_bytes = input_file.tellg();
-
-    // Calculate the number of uint64_t elements.
-    size_t num_elements = file_size_bytes / sizeof(unsigned long long);
-
-	std::vector<uint64_t> numbers;
-	numbers.resize(num_elements);
-
-	input_file.seekg(0, std::ios::beg);
-
-	input_file.read(reinterpret_cast<char*>(numbers.data()),
-					num_elements * sizeof(unsigned long long));
-
-	long long bytes_read = input_file.gcount();
-	assert(bytes_read == file_size_bytes);
-
-    input_file.close();
-
-	return numbers;
-}
-
-void generate_input(std::vector<uint64_t>& insertions, std::vector<uint64_t>& removals, bool use_predefined)
-{
-	if (use_predefined)
-	{
-		insertions = read_from_file("insertion_order.dat");
-		removals = read_from_file("removal_order.dat");
-		if (!insertions.empty() && !removals.empty())
-		{
-			return;
-		}
-	}
-
-	// A C++ standard library class for obtaining true random numbers from the operating system.
-    // This is used to seed our random number generator.
-    std::random_device rd;
-
-    // A 64-bit Mersenne Twister pseudo-random number generator engine.
-    // It's the standard for high-quality random number generation in modern C++.
-    // We seed it with a value from std::random_device to ensure a unique sequence each time.
-    std::mt19937_64 gen(rd());
-
-    // A uniform integer distribution that generates numbers in the range [0, 2^64-1].
-    // The 'unsigned long long' type is a 64-bit integer, which is necessary for this range.
-    // By default, it generates numbers in the full range of its template parameter.
-    std::uniform_int_distribution<uint64_t> distrib;
-
-    const int num_to_generate = 100000;
-    insertions.reserve(num_to_generate); // Reserve memory for efficiency
-
-    // Generate 100,000 random numbers and store them in the vector.
-    for (int i = 0; i < num_to_generate; ++i) {
-        // Call the distribution object with the generator engine to get a random number.
-        insertions.push_back(distrib(gen) % 400000);
-    }
-
-	// remove duplicates
-	auto random_unique_numbers = std::set<uint64_t>(insertions.begin(), insertions.end());
-	insertions = std::vector<uint64_t>(random_unique_numbers.begin(), random_unique_numbers.end());
-
-	write_to_file(insertions, "insertion_order.dat");
-
-    // Print the generated numbers to the console.
-    std::cout << "Generated " << insertions.size() << " random 64-bit numbers:" << std::endl;
-
-	removals = std::vector<uint64_t>(insertions);
-
-	std::shuffle(removals.begin(), removals.end(), gen);
-
-	write_to_file(removals, "removal_order.dat");
-}
-
-void MlpSetRemoveSingleThreadedRemove(bool use_predefined_input)
-{
-	std::vector<uint64_t> insertions, removals;
-	generate_input(insertions, removals, use_predefined_input);
-
-	MlpSetUInt64::MlpSet s;
-    s.Init(4194304);
-	
-	for (uint64_t num : insertions)
-	{
-		s.Insert(num);
-	}
-
-	std::set<uint64_t> numbers_in_ds =
-		std::set<uint64_t>(insertions.begin(), insertions.end());
-	
-	for (size_t i = 0; i < removals.size(); i++)
-	{
-		uint64_t num = removals[i];
-
-		// check we can still find the current number's successor
-		auto itr = numbers_in_ds.find(num);
-		itr++;
-		if (itr != numbers_in_ds.end())
-		{
-			bool found;
-			uint64_t successor = s.LowerBound(num + 1, found);
-			assert(found);
-			assert(successor == *itr);
-		}
-
-		s.Remove(num);
-		ReleaseAssert(!s.Exist(num));
-
-		numbers_in_ds.erase(num);
-	}
-	
-	for (uint64_t num: removals)
-	{
-		s.Remove(num);
-		ReleaseAssert(!s.Exist(num));
-	}
-}
-
-TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandom)
-{
-	MlpSetRemoveSingleThreadedRemove(false);
-}
-
-TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedRandomPredefined)
-{
-	MlpSetRemoveSingleThreadedRemove(true);
-}
-
-TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedFirstLayers)
-{
-	// remove an element that is in the L1/L2 cache and make sure everything still
-	// works as expected
-
-	MlpSetUInt64::MlpSet s;
-	s.Init(4194304);
-
-	const uint64_t value = (1LL << 63);
-	// This value is guaranteed to be placed into the lower level cache, since
-	// it is the first value inserted with those high bits
-	s.Insert(value);
-	s.Insert(value + 1);
-
-	// insert a bunch of values which share 0 bytes of similarity to value
-	s.Insert(5);
-	s.Insert(50);
-	s.Insert(7);
-	s.Insert(65);
-
-	// choose another value to search lower bound for which also share no
-	// byte similarity to any of the inserted values
-	const uint64_t value_to_search = value >> 32;
-	bool found;
-	uint64_t result1 = s.LowerBound(value_to_search, found);
-	ReleaseAssert(found);
-
-	s.Remove(value);
-
-	uint64_t result2 = s.LowerBound(value_to_search, found);
-	ReleaseAssert(found);
-
-	// before the removal we expect to find the inserted value
-	ReleaseAssert(result1 == value);
-
-	// after the removal we expect to find the next biggest value
-	ReleaseAssert(result2 == value + 1);
-
-	s.Remove(value + 1);
-	s.LowerBound(value_to_search, found);
-
-	// There should be no more values with such a lower bound
-	ReleaseAssert(!found);
-}
-
-TEST(MlpSetUInt64, WorkloadD_16M_Dep)
-{
-	printf("Generating workload WorkloadD 16M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadD::GenWorkload16M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-	}
-	printf("Finished %d queries\n", int(workload.numOperations));
-}
-
-TEST(MlpSetUInt64, WorkloadD_80M_Dep)
-{
-	printf("Generating workload WorkloadD 80M ENFORCE dep..\n");
-	WorkloadUInt64 workload = WorkloadD::GenWorkload80M();
-	Auto(workload.FreeMemory());
-	
-	workload.EnforceDependency();
-	
-	printf("Executing workload..\n");
-	MlpSetExecuteWorkload<true>(workload);
-	
-	printf("Validating results..\n");
-	rep(i, 0, workload.numOperations - 1)
-	{
-		ReleaseAssert(workload.results[i] == workload.expectedResults[i]);
-	}
-	printf("Finished %d queries\n", int(workload.numOperations));
-}
-
-// Simple test to verify basic functionality: insert 0 and check if it exists
-TEST(MlpSetUInt64, BasicInsertAndExistTest)
-{
-	MlpSetUInt64::MlpSet ms;
-	ms.Init(20000+1024);  // Initialize with capacity for 1024 elements
-	
-	// Insert the number 0
-	bool inserted = ms.Insert(0);
-	ReleaseAssert(inserted);  // Should return true since 0 was not previously in the set
-	
-	// Check if 0 exists
-	bool exists = ms.Exist(0);
-	ReleaseAssert(exists);  // Should return true since we just inserted 0
-	
-	printf("Successfully inserted and found key 0\n");
-}
-
-}	// annoymous namespace
-
-

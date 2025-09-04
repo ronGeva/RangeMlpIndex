@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <thread>
 
+
 namespace MlpSetUInt64
 {
 
@@ -608,7 +609,7 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 
 void CuckooHashTableNode::RevertToInternalBitmap()
 {
-	assert(!IsUsingInternalChildMap());
+	assert(!IsUsingInternalChildMap() && !IsLeaf()); //ASK RON TODO
 
 	uint64_t tmpChildMap = 0;
 
@@ -804,7 +805,7 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
     target->SetGeneration(generation);
 	this->SetGeneration(generation);
     target->CopyWithoutGeneration(*this);
-	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
+	if (IsUsingInternalChildMap() || (IsExternalPointerBitMap() || IsLeaf())) //ASK RON TODO
 	{
 		// Only clear the occupied flag to mark this node as free
 		// Don't zero other fields that readers might still be accessing
@@ -1328,7 +1329,7 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 		rep(i, -3, 3)
 		{
 			CuckooHashTableNode* target = &ht[victimPosition + i];
-			if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
+			if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap() && !target->IsLeaf()) //ASK RON TODO
 			{
 				int offset = ((target->hash >> 21) & 7) - 4;
 				if (offset + i == 0)
