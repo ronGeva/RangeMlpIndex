@@ -610,6 +610,7 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 void CuckooHashTableNode::RevertToInternalBitmap()
 {
 	assert(!IsUsingInternalChildMap() && !IsLeaf()); //ASK RON TODO
+	//assert(!IsUsingInternalChildMap());
 
 	uint64_t tmpChildMap = 0;
 
@@ -806,6 +807,7 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 	this->SetGeneration(generation);
     target->CopyWithoutGeneration(*this);
 	if (IsUsingInternalChildMap() || (IsExternalPointerBitMap() || IsLeaf())) //ASK RON TODO
+	//if (IsUsingInternalChildMap() || (IsExternalPointerBitMap()))
 	{
 		// Only clear the occupied flag to mark this node as free
 		// Don't zero other fields that readers might still be accessing
@@ -1007,7 +1009,9 @@ uint32_t CuckooHashTable::Insert(int ilen, int dlen, uint64_t dkey, int firstChi
 	if (!exist && !failed)
 	{
 		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild, generation);
+		cout << "pos " << pos << endl;
 	}
+	
 	return pos;
 }
 
@@ -1123,6 +1127,15 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 {
 	assert(m_hasCalledInit);
 	
+	
+
+	// high to low:
+	// out1: h1(8), h1(7), h1(6), h1(5)
+	// out2: h2(8), h2(7), h2(6), h2(5)
+	// out3: h3(8), h3(7), h3(6), h3(5)
+	// out4: h1(4), h1(3), h2(4), h2(3)
+	// out5: h3(4), h3(3)
+
 	__m128i h1, h2, h3, h4;
 	uint64_t h5;
 	XXH::XXHashArray(key, h1, h2, h3, h4, h5);
@@ -1329,6 +1342,7 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 		rep(i, -3, 3)
 		{
 			CuckooHashTableNode* target = &ht[victimPosition + i];
+			//if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
 			if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap() && !target->IsLeaf()) //ASK RON TODO
 			{
 				int offset = ((target->hash >> 21) & 7) - 4;
@@ -1888,7 +1902,7 @@ _end:
 						   cur_gen /*generation*/);
 		assert(!exist && !failed);
 	}
-	
+
 	// Finally, if lcp == 2, we need to set the corresponding m_treeDepth2 bit
 	//
 	if (lcpLen == 2)

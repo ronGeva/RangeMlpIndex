@@ -30,11 +30,11 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key) {
     
     if (lcpLen == 8) {
         // It's a leaf - find which position has it
-        uint32_t pos = allPositions1[7];
+        uint32_t pos = allPositions1[ilen-1];
         CuckooHashTableNode* node = &m_hashTable.ht[pos];
         
-        if (!node->IsEqualNoHash(lowerBoundKey, 8)) {
-            pos = allPositions2[7];
+        if (!node->IsEqualNoHash(lowerBoundKey, ilen)) {
+            pos = allPositions2[ilen-1];
             node = &m_hashTable.ht[pos];
         }
         
@@ -98,14 +98,14 @@ bool MlpRangeTree::Store(uint64_t key, void* value) {
                                           expectedHash, cur_generation);
         
         if (lcpLen == 8) {
-            uint32_t pos = allPositions1[7];
+            uint32_t pos = allPositions1[ilen-1];
             CuckooHashTableNode* node = &m_hashTable.ht[pos];
             
-            if (!node->IsEqualNoHash(key, 8)) {
-                pos = allPositions2[7];
+            if (!node->IsEqualNoHash(key, ilen)) {
+                pos = allPositions2[ilen-1];
                 node = &m_hashTable.ht[pos];
             }
-            
+
             // Use the efficient in-place methods
             node->SetLeafType(CuckooHashTableNode::LEAF_SINGLE);
             node->SetLeafData(value);
@@ -169,11 +169,11 @@ bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value) {
                                           expectedHash, cur_generation);
         
         if (lcpLen == 8) {
-            uint32_t pos = allPositions1[7];
+            uint32_t pos = allPositions1[ilen-1];
             CuckooHashTableNode* node = &m_hashTable.ht[pos];
             
-            if (!node->IsEqualNoHash(end, 8)) {
-                pos = allPositions2[7];
+            if (!node->IsEqualNoHash(end, ilen)) {
+                pos = allPositions2[ilen-1];
                 node = &m_hashTable.ht[pos];
             }
             
@@ -201,11 +201,11 @@ bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value) {
                                           expectedHash, cur_generation);
         
         if (lcpLen == 8) {
-            uint32_t pos = allPositions1[7];
+            uint32_t pos = allPositions1[ilen-1];
             CuckooHashTableNode* node = &m_hashTable.ht[pos];
             
-            if (!node->IsEqualNoHash(start, 8)) {
-                pos = allPositions2[7];
+            if (!node->IsEqualNoHash(start, ilen)) {
+                pos = allPositions2[ilen-1];
                 node = &m_hashTable.ht[pos];
             }
             
