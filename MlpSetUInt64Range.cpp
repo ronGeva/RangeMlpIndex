@@ -11,8 +11,9 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key) {
     
     // First find using LowerBound
     bool found;
+    cout << "Calling LowerBound for key: " << key << endl;
     uint64_t lowerBoundKey = MlpSet::LowerBound(key, found);
-    
+    cout << "LowerBound returned: " << lowerBoundKey << ", found: " << found << endl;
     if (!found) {
         return result;
     }
@@ -184,6 +185,7 @@ bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value) {
     
     // Insert start node
     if (!MlpSet::Insert(start)) {
+        cout << "removing" << endl;
         MlpSet::Remove(end); // Rollback
         return false;
     }
@@ -268,12 +270,14 @@ void MlpRangeTree::ClearRange(uint64_t start, uint64_t end) {
     
     // Remove all collected ranges
     for (const auto& range : rangesToRemove) {
+        cout << "removing" << endl;
         MlpSet::Remove(range.first);   // Remove start
         MlpSet::Remove(range.second);  // Remove end
     }
     
     // Remove all collected points
     for (uint64_t point : pointsToRemove) {
+        cout << "removing" << endl;
         MlpSet::Remove(point);
     }
 }
@@ -328,13 +332,12 @@ bool MlpRangeTree::EraseRange(uint64_t start, uint64_t end) {
 
 bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& rangeEnd, void*& value) {
     NodeResult result = QueryLCPWithNode(from);
-    
     if (!result.found || !result.node->IsLeaf()) {
         return false;
     }
     
     CuckooHashTableNode::LeafType type = result.node->GetLeafType();
-    
+    cout << "type: " << result.node->hash << endl;
     switch (type) {
         case CuckooHashTableNode::LEAF_SINGLE:
             rangeStart = rangeEnd = result.key;
@@ -342,10 +345,12 @@ bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& range
             return true;
             
         case CuckooHashTableNode::LEAF_RANGE_START:
+            cout << "Found LEAF_RANGE_START" << endl;
             rangeStart = result.key;
             // Find the end
             {
                 NodeResult endResult = QueryLCPWithNode(result.key + 1);
+                cout << "After QueryLCPWithNode for end" << endResult.key << endl;
                 if (endResult.found && endResult.node->IsLeaf() && 
                     endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
                     rangeEnd = endResult.key;

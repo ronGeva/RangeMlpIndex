@@ -541,7 +541,7 @@ bool CuckooHashTableNode::ExistChild(int child)
 #endif
 		return result;
 	}
-	else if (unlikely(IsExternalPointerBitMap()))
+	else if (unlikely(IsExternalPointerBitMap() && !IsLeaf())) //ASK RON TODO
 	{
 		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load());
 		return (ptr[child / 64] & (uint64_t(1) << (child % 64))) != 0;
@@ -1009,7 +1009,7 @@ uint32_t CuckooHashTable::Insert(int ilen, int dlen, uint64_t dkey, int firstChi
 	if (!exist && !failed)
 	{
 		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild, generation);
-		cout << "pos " << pos << endl;
+		
 	}
 	
 	return pos;
@@ -2175,6 +2175,7 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 		// LockGuard lock(&displacement_mutex, true);
 		uint32_t generation = cur_generation.load();
 		Promise p = LowerBoundInternal(value, found, generation);
+		//cout << "found: " << found << " result: " << p.IsValid() << endl;
 		if (!found) {
 			return 0xffffffffffffffffULL;
 		}
