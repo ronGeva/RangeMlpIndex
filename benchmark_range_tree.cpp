@@ -280,7 +280,6 @@ void benchmark_large_ranges(size_t num_ranges) {
         size_t found_count = 0;
         
         for (size_t i = 0; i < num_ranges; i++) {
-            cout << "current " << current << endl;
             uint64_t start, end;
             void* value;
             if (tree.FindNext(current, start, end, value)) {
@@ -289,7 +288,6 @@ void benchmark_large_ranges(size_t num_ranges) {
             } else {
                 break;
             }
-            cout << " " << endl;    
         }
         
         if (found_count != num_ranges) {

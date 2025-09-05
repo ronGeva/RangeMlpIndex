@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iomanip>
 #include <thread>
+#include <bitset>
 
 
 namespace MlpSetUInt64
@@ -218,12 +219,10 @@ LockGuard::LockGuard(std::shared_mutex *m, bool is_shared) : m(m), _is_shared(is
 	{
 		m->lock();
 	}
-	// DEBUG("LOCKED");
 }
 
 LockGuard::~LockGuard()
 {
-	// DEBUG("UNLOCKING");
 	if (_is_shared)
 	{
 		m->unlock_shared();
@@ -984,9 +983,6 @@ uint32_t CuckooHashTable::ReservePositionForInsert(int ilen, uint64_t dkey, uint
 	}
 	uint32_t victimPosition = rand()%2 ? h1 : h2;
 	{
-		// DEBUG("Locking");
-		// LockGuard lock(&displacement_mutex, false);
-		// DEBUG("locked");
 		HashTableCuckooDisplacement(victimPosition, 1, failed, generation);
 	}
 	if (failed)
@@ -1005,7 +1001,6 @@ uint32_t CuckooHashTable::Insert(int ilen, int dlen, uint64_t dkey, int firstChi
 	hash18bit = hash18bit & ((1<<18) - 1);
 	
 	uint32_t pos = ReservePositionForInsert(ilen, dkey, hash18bit, exist, failed, generation);
-	// DEBUG("pos=" << pos << " exist=" << exist << " failed=" << failed);
 	if (!exist && !failed)
 	{
 		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild, generation);
@@ -1205,13 +1200,6 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 #ifdef ENABLE_STATS
 		stats.m_lcpResultHistogram[2]++;
 #endif
-        DEBUG("!!!");
-		len = 7;
-		for (; len >= 2; len --)
-		{		
-			DEBUG("generation1=" << ht[allPositions1[len]].LoadGeneration() << " pos=" << allPositions1[len]);
-			DEBUG("generation2=" << ht[allPositions2[len]].LoadGeneration() << " pos=" << allPositions2[len]);
-		}
 		return 2;
 	}
 
@@ -1679,7 +1667,6 @@ bool MlpSet::Insert(uint64_t value)
 	uint32_t cur_gen = cur_generation.load() + 1;
 	ResetGenerationsIfNeeded(cur_gen);
 	
-	DEBUG("insert=" << value << " cur_gen=" << cur_gen);
 	int lcpLen;
 	// Handle LCP < 2 case first
 	// This is supposed to be a L1 hit (working set 8KB)
@@ -1696,7 +1683,6 @@ bool MlpSet::Insert(uint64_t value)
 			goto _end;
 		}
 	}
-	DEBUG("reached!");
 	
 	// Issue the prefetch in case LCP turns out to be 2
 	//
@@ -1773,9 +1759,6 @@ bool MlpSet::Insert(uint64_t value)
 					assert(!exist && !failed);
 					assert(!m_hashTable.ht[x].IsOccupied());
 					// should be ok without fencing as we have a lock.
-					// DEBUG("Locking");
-					// LockGuard lock(&displacement_mutex, false);
-					// DEBUG("locked");
 					m_hashTable.ht[x].SetGeneration(cur_gen);
 					m_hashTable.ht[pos].MoveNode(&(m_hashTable.ht[x]), cur_gen);
 					m_hashTable.ht[x].AlterIndexKeyLen(lcpLen + 1);
@@ -1931,9 +1914,6 @@ bool MlpSet::Exist(uint64_t value)
 		                              allPositions2 /*out*/, 
 		                              expectedHash /*out*/,
 									  cur_generation /*generation*/);
-	if (lcpLen != 8) {
-		DEBUG("lcpLen=" << lcpLen << " value=" << value);
-	}
 	return (lcpLen == 8);
 }
 
@@ -2054,10 +2034,6 @@ _parent:
 			{
 				uint32_t pos = allPositions[k][ilen - 1];
 				// Check generation before accessing node methods
-				if (generation < m_hashTable.ht[pos].LoadGeneration())
-				{
-					return CuckooHashTable::LookupMustExistPromise();
-				}
 				if (m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
 				{
 					assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
@@ -2170,12 +2146,9 @@ MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 
 uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 {
-	// DEBUG("LowerBound start");
 	do {
-		// LockGuard lock(&displacement_mutex, true);
 		uint32_t generation = cur_generation.load();
 		Promise p = LowerBoundInternal(value, found, generation);
-		//cout << "found: " << found << " result: " << p.IsValid() << endl;
 		if (!found) {
 			return 0xffffffffffffffffULL;
 		}
@@ -2188,7 +2161,6 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 			    std::cout << "LowerBound failed: generation mismatch" << std::endl;
 			}
 		}
-		// DEBUG("LowerBound failed");
 	} while (true);
 }
 
