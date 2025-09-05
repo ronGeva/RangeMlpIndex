@@ -9,6 +9,7 @@
 #include "gtest/gtest.h"
 #include <random>
 #include <fstream>
+#include "benchmark_mlp.h"
 
 namespace {
 
@@ -1362,6 +1363,26 @@ TEST(MlpSetUInt64, MlpSetRemoveSingleThreadedFirstLayers)
 
 	// There should be no more values with such a lower bound
 	ReleaseAssert(!found);
+}
+
+TEST(MlpSetUInt64, MlpSetInsertBenchmarkSanity)
+{
+	// Add the numbers 0 to 99999 inclusive and test the amount of milliseconds
+	// it took.
+	MlpSetUInt64::MlpSet s;
+	s.Init(4194304);
+
+	// benchmark
+	struct timespec start, end;
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	for (int i = 0; i < 100000; i++)
+	{
+		s.Insert(i);
+	}
+	clock_gettime(CLOCK_MONOTONIC, &end);
+
+	double duration_ms = bm_duration_passed_ms(&start, &end);
+	printf("MlpSetInsertBenchmarkSanity duration=%.3f ms\n", duration_ms);
 }
 
 TEST(MlpSetUInt64, WorkloadD_16M_Dep)

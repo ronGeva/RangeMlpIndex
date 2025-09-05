@@ -3,7 +3,7 @@
 # list of all directories containing .cpp and .h code
 # space separated, must start with ./ and no forwardslash in the end
 #
-SRC_DIRS := . ./StupidTrie ./Workloads ./third_party/libart
+SRC_DIRS := . ./StupidTrie ./Workloads ./third_party/libart ./benchmarking
 
 # additional g++ compiler flags
 #
@@ -11,7 +11,7 @@ EXTRA_FLAGS := -mavx2
 
 # header file base paths for includes, space separated
 #
-INCLUDE_DIRS := . ./Workloads  ./third_party/hot ./third_party/sparsehash/include/ ./third_party/arraylayout
+INCLUDE_DIRS := . ./Workloads  ./third_party/hot ./third_party/sparsehash/include/ ./third_party/arraylayout ./benchmarking
 
 ##########################################################
 
@@ -29,10 +29,11 @@ FLAGS += $(EXTRA_FLAGS)
 INCLUDE_DIRS_FLAGS := $(addprefix -I$(SRC_RELDIR),$(INCLUDE_DIRS))
 FLAGS += $(INCLUDE_DIRS_FLAGS)
 
-SRCS := $(foreach dir,$(SRC_DIRS),$(wildcard $(SRC_RELDIR)$(dir)/*.cpp))
-SRCS_AND_HEADERS := $(foreach dir,$(SRC_DIRS),$(wildcard $(SRC_RELDIR)$(dir)/*.cpp $(SRC_RELDIR)$(dir)/*.h))
+SRCS := $(foreach dir,$(SRC_DIRS),$(wildcard $(SRC_RELDIR)$(dir)/*.cpp $(SRC_RELDIR)$(dir)/*.c))
+SRCS_AND_HEADERS := $(foreach dir,$(SRC_DIRS),$(wildcard $(SRC_RELDIR)$(dir)/*.cpp $(SRC_RELDIR)$(dir)/*.c $(SRC_RELDIR)$(dir)/*.h))
 OBJS := $(SRCS:$(SRC_RELDIR)./%=%)
 OBJS := $(subst .cpp,.o,$(OBJS))
+OBJS := $(subst .c,.o,$(OBJS))
 OBJS := $(subst /,.,$(OBJS))
 
 main: $(OBJS) libgtest.a
@@ -43,9 +44,15 @@ generated.dependency: $(SRCS_AND_HEADERS) Makefile
 	for srcname in $(SRCS) ; do \
 		objname=$${srcname#"$(SRC_RELDIR)./"}; \
 		objname=$$(echo $$objname | sed -e 's/\//./g'); \
-		objname=$${objname%".cpp"}.o; \
-		g++ $(FLAGS) -I$(SRC_RELDIR)./gtest -MM $$srcname -MT $$objname >> ./generated.dependency; \
-		printf "\tg++ \$$(FLAGS) $$srcname -c -o $$objname\n" >> ./generated.dependency; \
+		if echo $$srcname | grep -q '\.c$$'; then \
+			objname=$${objname%".c"}.o; \
+			gcc $(INCLUDE_DIRS_FLAGS) -MM $$srcname -MT $$objname >> ./generated.dependency; \
+			printf "\tgcc \$$(INCLUDE_DIRS_FLAGS) $$srcname -c -o $$objname\n" >> ./generated.dependency; \
+		else \
+			objname=$${objname%".cpp"}.o; \
+			g++ $(FLAGS) -I$(SRC_RELDIR)./gtest -MM $$srcname -MT $$objname >> ./generated.dependency; \
+			printf "\tg++ \$$(FLAGS) $$srcname -c -o $$objname\n" >> ./generated.dependency; \
+		fi; \
 	done
 
 include ./generated.dependency
