@@ -25,7 +25,7 @@ public:
     bool Erase(uint64_t key);
     
     // Erase a specific range [start, end]
-    bool EraseRange(uint64_t start, uint64_t end);
+    // bool EraseRange(uint64_t start, uint64_t end);
     
     // Find next range from index upwards
     bool FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& rangeEnd, void*& value);
@@ -54,6 +54,7 @@ public:
         uint64_t currentEnd;
         void* currentValue;
         uint64_t nextSearchKey;  // Track where to search next
+        uint32_t starting_generation; // Track the generation when the iterator was created
     };
 
     // Add these methods to MlpRangeTree class:
@@ -94,17 +95,18 @@ private:
         uint64_t key;
         CuckooHashTableNode* node;  // Direct pointer to the node
         bool found;
+        bool generationValid;
         
         // Helper method
         bool isLeaf() const { return found && node && node->IsLeaf(); }
     };
     
     // Enhanced QueryLCP that returns the node pointer
-    NodeResult QueryLCPWithNode(uint64_t key);
+    NodeResult QueryLCPWithNode(uint64_t key, uint32_t generation);
     
     // Range operations helpers
     void ClearRange(uint64_t start, uint64_t end);
-    bool InsertRangeNodes(uint64_t start, uint64_t end, void* value);
+    bool InsertRangeNodes(uint64_t start, uint64_t end, void* value, uint32_t generation);
 };
 
 } // namespace MlpSetUInt64

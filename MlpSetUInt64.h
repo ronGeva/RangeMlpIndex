@@ -524,10 +524,10 @@ std::atomic<uint32_t> cur_generation;
 	
 	// Insert an element, returns true if the insertion took place, false if the element already exists
 	//
-	bool Insert(uint64_t value);
+	bool Insert(uint64_t value, uint32_t generation);
 
 	// Removes an element, returns true if the removal took place, false if the element doesn't exists
-	bool Remove(uint64_t value);
+	bool Remove(uint64_t value, uint32_t generation);
 	
 	// Returns whether the specified value exists in the set
 	//

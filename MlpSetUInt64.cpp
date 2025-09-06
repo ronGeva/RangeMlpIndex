@@ -1581,7 +1581,7 @@ std::optional<uint64_t> MlpSet::ClearLowLevelCaches(uint64_t value)
 	ClearL2Cache(value, opt_successor);
 	return opt_successor;
 }
-bool MlpSet::Remove(uint64_t value)
+bool MlpSet::Remove(uint64_t value, uint32_t generation = UINT32_MAX)
 {
 	uint32_t ilen;
 	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
@@ -1603,9 +1603,12 @@ bool MlpSet::Remove(uint64_t value)
 		return false;
 	}
 
-	uint32_t cur_gen = cur_generation.load() + 1;
-	
-	ResetGenerationsIfNeeded(cur_gen);
+	uint32_t cur_gen = generation;
+	bool should_take_generation = generation == UINT32_MAX;
+	if (should_take_generation) {
+		generation = cur_generation.load() + 1;
+		ResetGenerationsIfNeeded(cur_gen);
+	}
 
 	std::optional<uint64_t> opt_successor = ClearLowLevelCaches(value);
 
@@ -1655,16 +1658,22 @@ bool MlpSet::Remove(uint64_t value)
 		}
 	}
 
-	cur_generation.store(cur_gen);
+	if (should_take_generation) {
+		cur_generation.store(cur_gen);
+	}
 
 	return true;
 }
 
-bool MlpSet::Insert(uint64_t value)
+bool MlpSet::Insert(uint64_t value, uint32_t generation = UINT32_MAX)
 {
 	assert(m_hasCalledInit);
-	uint32_t cur_gen = cur_generation.load() + 1;
-	ResetGenerationsIfNeeded(cur_gen);
+	bool should_take_generation = generation == UINT32_MAX;
+	uint32_t cur_gen = generation;
+	if (should_take_generation) {
+		cur_gen = cur_generation.load() + 1;
+		ResetGenerationsIfNeeded(cur_gen);
+	}
 	
 	int lcpLen;
 	// Handle LCP < 2 case first
@@ -1894,7 +1903,9 @@ _end:
 		m_treeDepth2[(value >> 40) / 64].fetch_or(depth2Bit);
 	}
 
-	cur_generation.store(cur_gen);
+	if (should_take_generation) {
+		cur_generation.store(cur_gen);
+	}
 	
 	return true;
 }

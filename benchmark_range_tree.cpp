@@ -165,7 +165,7 @@ void benchmark_ranges(size_t num_ranges, size_t avg_range_size) {
     {
         Timer t("Erase ranges");
         for (size_t i = 0; i < num_ranges / 2; i++) {
-            tree.EraseRange(ranges[i].first, ranges[i].second);
+            // tree.EraseRange(ranges[i].first, ranges[i].second);
         }
     }
 }

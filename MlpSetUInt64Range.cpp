@@ -3,18 +3,31 @@
 
 namespace MlpSetUInt64 {
 
+    #define QueryAndReturnIfNotValid(resultName, key, generation) \
+    NodeResult resultName = tree->QueryLCPWithNode(key, generation); \
+    if (!resultName.generationValid) { \
+        valid = false; \
+        return; \
+    }
+
 // Enhanced QueryLCP that returns node pointer to avoid double traversal
-MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key) {
+MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key, uint32_t generation) {
     NodeResult result;
     result.found = false;
     result.node = nullptr;
     
     // First find using LowerBound
     bool found;
-    uint64_t lowerBoundKey = MlpSet::LowerBound(key, found);
+    Promise lowerBoundPromise = MlpSet::LowerBoundInternal(key, found, generation);
     if (!found) {
         return result;
     }
+    if (!lowerBoundPromise.IsGenerationValid(generation)) {
+        result.found = false;
+        result.generationValid = false;
+        return result;
+    }
+    uint64_t lowerBoundKey = lowerBoundPromise.Resolve();
     
     // Now locate the node using QueryLCP
     uint32_t ilen;
@@ -23,9 +36,15 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key) {
     uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
     uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
     
-    int lcpLen = m_hashTable.QueryLCP(lowerBoundKey, ilen, 
+    int lcpLen = m_hashTable.QueryLCPInternal(lowerBoundKey, ilen, 
                                       allPositions1, allPositions2, 
-                                      expectedHash, cur_generation);
+                                      expectedHash, generation);
+    if (lcpLen < 0) {
+        result.generationValid = false;
+        return result;
+    }
+    result.generationValid = true;
+
     
     if (lcpLen == 8) {
         // It's a leaf - find which position has it
@@ -46,43 +65,57 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key) {
 }
 
 void* MlpRangeTree::Load(uint64_t key) {
-    NodeResult result = QueryLCPWithNode(key);
-    
-    if (!result.found || !result.node->IsLeaf()) {
-        return nullptr;
-    }
-    
-    CuckooHashTableNode::LeafType type = result.node->GetLeafType();
-    
-    switch (type) {
-        case CuckooHashTableNode::LEAF_SINGLE:
-            // Return data only if exact key match
-            return (result.key == key) ? result.node->GetLeafData() : nullptr;
-            
-        case CuckooHashTableNode::LEAF_RANGE_START:
-            // We're in range only if this start node is exactly our key
-            return (result.key == key) ? result.node->GetLeafData() : nullptr;
-            
-        case CuckooHashTableNode::LEAF_RANGE_END:
-            // We're definitely inside this range
-            // Get data from the corresponding start node
-            {
-                uint64_t startKey = result.node->GetRangeStart();
-                NodeResult startResult = QueryLCPWithNode(startKey);
-                return (startResult.found && startResult.node->IsLeaf()) ? 
-                       startResult.node->GetLeafData() : nullptr;
+    while (true) {
+        uint32_t generation = cur_generation.load();
+        NodeResult result = QueryLCPWithNode(key, generation);
+
+        if (!result.generationValid) {
+            continue;
+        }
+        
+        if (!result.found || !result.node->IsLeaf()) {
+            return nullptr;
+        }
+
+        CuckooHashTableNode::LeafType type = result.node->GetLeafType();
+
+        void *ret_val = nullptr;
+        switch (type) {
+            case CuckooHashTableNode::LEAF_SINGLE:
+            case CuckooHashTableNode::LEAF_RANGE_START:
+                // Return data only if exact key match
+                if (result.key == key) {
+                    ret_val = result.node->GetLeafData();
+                }
+                break;
+            case CuckooHashTableNode::LEAF_RANGE_END:
+                // We're definitely inside this range
+                // Get data from the corresponding start node
+                {
+                    uint64_t startKey = result.node->GetRangeStart();
+                    NodeResult startResult = QueryLCPWithNode(startKey, generation);
+                    if (startResult.found && startResult.node->IsLeaf()) {
+                        ret_val = startResult.node->GetLeafData();
+                    } else if (!startResult.generationValid) {
+                        continue;
+                    }
+                }
             }
+        if (result.node->LoadGeneration() > generation) {
+            continue;
+        }
+        return ret_val;
     }
-    
-    return nullptr;
 }
 
-bool MlpRangeTree::Store(uint64_t key, void* value) {
+bool MlpRangeTree::Store(uint64_t key, void* value) { //
+    uint32_t generation = cur_generation.load() + 1;
+    ResetGenerationsIfNeeded(generation);
     // First remove any existing value/range at this key
     Erase(key);
     
     // Insert as single point
-    bool inserted = MlpSet::Insert(key);
+    bool inserted = MlpSet::Insert(key, generation);
     
     if (inserted) {
         // Find the node we just inserted
@@ -109,26 +142,36 @@ bool MlpRangeTree::Store(uint64_t key, void* value) {
             node->SetLeafType(CuckooHashTableNode::LEAF_SINGLE);
             node->SetLeafData(value);
         }
+        cur_generation.store(generation);
     }
-    
+
     return inserted;
 }
 
-bool MlpRangeTree::StoreRange(uint64_t start, uint64_t end, void* value) {
+bool MlpRangeTree::StoreRange(uint64_t start, uint64_t end, void* value) { //
     if (start > end) return false;
-    
+
+    uint32_t generation = cur_generation.load() + 1;
+    ResetGenerationsIfNeeded(generation);
+
     // Clear any overlapping ranges/values
     ClearRange(start, end);
     
     // Insert the new range
-    return InsertRangeNodes(start, end, value);
+    bool inserted = InsertRangeNodes(start, end, value, generation);
+
+    cur_generation.store(generation);
+    return inserted;
 }
 
-bool MlpRangeTree::InsertRange(uint64_t start, uint64_t end, void* value) {
+bool MlpRangeTree::InsertRange(uint64_t start, uint64_t end, void* value) { //
     if (start > end) return false;
-    
+
+    uint32_t generation = cur_generation.load() + 1;
+    ResetGenerationsIfNeeded(generation);
+
     // Check if range is empty
-    NodeResult current = QueryLCPWithNode(start);
+    NodeResult current = QueryLCPWithNode(start, UINT32_MAX);
     
     // Check if we start inside an existing range
     if (current.found) {
@@ -146,12 +189,14 @@ bool MlpRangeTree::InsertRange(uint64_t start, uint64_t end, void* value) {
     }
     
     // Range is empty, insert it
-    return InsertRangeNodes(start, end, value);
+    bool inserted = InsertRangeNodes(start, end, value, generation);
+    cur_generation.store(generation);
+    return inserted;
 }
 
-bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value) {
+bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value, uint32_t generation) {
     // Insert end node first (for consistency during concurrent reads)
-    if (!MlpSet::Insert(end)) {
+    if (!MlpSet::Insert(end, generation)) {
         return false;
     }
     
@@ -163,9 +208,9 @@ bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value) {
         uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
         uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
         
-        int lcpLen = m_hashTable.QueryLCP(end, ilen, 
-                                          allPositions1, allPositions2, 
-                                          expectedHash, cur_generation);
+        int lcpLen = m_hashTable.QueryLCPInternal(end, ilen, 
+                                                  allPositions1, allPositions2, 
+                                                  expectedHash, UINT32_MAX);
         
         if (lcpLen == 8) {
             uint32_t pos = allPositions1[ilen-1];
@@ -182,8 +227,8 @@ bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value) {
     }
     
     // Insert start node
-    if (!MlpSet::Insert(start)) {
-        MlpSet::Remove(end); // Rollback
+    if (!MlpSet::Insert(start, generation)) {
+        MlpSet::Remove(end, generation); // Rollback
         return false;
     }
     
@@ -195,9 +240,9 @@ bool MlpRangeTree::InsertRangeNodes(uint64_t start, uint64_t end, void* value) {
         uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
         uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
         
-        int lcpLen = m_hashTable.QueryLCP(start, ilen, 
-                                          allPositions1, allPositions2, 
-                                          expectedHash, cur_generation);
+        int lcpLen = m_hashTable.QueryLCPInternal(start, ilen, 
+                                                  allPositions1, allPositions2, 
+                                                  expectedHash, UINT32_MAX);
         
         if (lcpLen == 8) {
             uint32_t pos = allPositions1[ilen-1];
@@ -220,20 +265,20 @@ void MlpRangeTree::ClearRange(uint64_t start, uint64_t end) {
     std::vector<std::pair<uint64_t, uint64_t>> rangesToRemove;
     std::vector<uint64_t> pointsToRemove;
     
-    NodeResult current = QueryLCPWithNode(start);
+    NodeResult current = QueryLCPWithNode(start, UINT32_MAX);
     
     // If we start inside a range, mark it for removal
     if (current.found && current.node->IsLeaf() && 
         current.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
         uint64_t rangeStart = current.node->GetRangeStart();
         rangesToRemove.push_back({rangeStart, current.key});
-        current = QueryLCPWithNode(current.key + 1);
+        current = QueryLCPWithNode(current.key + 1, UINT32_MAX);
     }
     
     // Process all nodes in [start, end]
     while (current.found && current.key <= end) {
         if (!current.node->IsLeaf()) {
-            current = QueryLCPWithNode(current.key + 1);
+            current = QueryLCPWithNode(current.key + 1, UINT32_MAX);
             continue;
         }
         
@@ -248,7 +293,7 @@ void MlpRangeTree::ClearRange(uint64_t start, uint64_t end) {
             case CuckooHashTableNode::LEAF_RANGE_START:
                 // Find the corresponding end node
                 {
-                    NodeResult endResult = QueryLCPWithNode(current.key + 1);
+                    NodeResult endResult = QueryLCPWithNode(current.key + 1, UINT32_MAX);
                     if (endResult.found && endResult.node->IsLeaf() && 
                         endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
                         rangesToRemove.push_back({current.key, endResult.key});
@@ -262,46 +307,49 @@ void MlpRangeTree::ClearRange(uint64_t start, uint64_t end) {
                 break;
         }
         
-        current = QueryLCPWithNode(nextKey);
+        current = QueryLCPWithNode(nextKey, UINT32_MAX);
     }
     
     // Remove all collected ranges
     for (const auto& range : rangesToRemove) {
-        MlpSet::Remove(range.first);   // Remove start
-        MlpSet::Remove(range.second);  // Remove end
+        MlpSet::Remove(range.first, UINT32_MAX);   // Remove start // TODO: Fix after Shai finishes!!!!
+        MlpSet::Remove(range.second, UINT32_MAX);  // Remove end // TODO: Fix after Shai finishes!!!!
     }
     
     // Remove all collected points
     for (uint64_t point : pointsToRemove) {
-        MlpSet::Remove(point);
+        MlpSet::Remove(point, UINT32_MAX);   // TODO: Fix after Shai finishes!!!!
     }
 }
 
-bool MlpRangeTree::Erase(uint64_t key) {
-    NodeResult result = QueryLCPWithNode(key);
+bool MlpRangeTree::Erase(uint64_t key) { //
+    NodeResult result = QueryLCPWithNode(key, UINT32_MAX);
     
     if (!result.found || !result.node->IsLeaf()) {
         return false;
     }
+
+    uint32_t generation = cur_generation.load() + 1;
+    ResetGenerationsIfNeeded(generation);
     
     CuckooHashTableNode::LeafType type = result.node->GetLeafType();
-    
+    bool ret_val = false;
     switch (type) {
         case CuckooHashTableNode::LEAF_SINGLE:
             if (result.key == key) {
-                return MlpSet::Remove(key);
+                ret_val = MlpSet::Remove(key, generation);
             }
             break;
             
         case CuckooHashTableNode::LEAF_RANGE_START:
             if (result.key == key) {
                 // Remove entire range - find the end
-                NodeResult endResult = QueryLCPWithNode(key + 1);
+                NodeResult endResult = QueryLCPWithNode(key + 1, UINT32_MAX);
                 if (endResult.found && endResult.node->IsLeaf() && 
                     endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
-                    MlpSet::Remove(key);
-                    MlpSet::Remove(endResult.key);
-                    return true;
+                    MlpSet::Remove(key, generation);
+                    MlpSet::Remove(endResult.key, generation);
+                    ret_val = true;
                 }
             }
             break;
@@ -310,70 +358,92 @@ bool MlpRangeTree::Erase(uint64_t key) {
             // Remove entire range containing this key
             {
                 uint64_t rangeStart = result.node->GetRangeStart();
-                MlpSet::Remove(rangeStart);
-                MlpSet::Remove(result.key);
-                return true;
+                MlpSet::Remove(rangeStart, generation);
+                MlpSet::Remove(result.key, generation);
+                ret_val = true;
             }
     }
-    
-    return false;
+    cur_generation.store(generation);
+    return ret_val;
 }
 
-bool MlpRangeTree::EraseRange(uint64_t start, uint64_t end) {
-    if (start > end) return false;
-    ClearRange(start, end);
-    return true;
-}
+// bool MlpRangeTree::EraseRange(uint64_t start, uint64_t end) { //
+//     if (start > end) return false;
+//     ClearRange(start, end);
+//     return true;
+// }
 
 bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& rangeEnd, void*& value) {
-    NodeResult result = QueryLCPWithNode(from);
-    if (!result.found || !result.node->IsLeaf()) {
-        return false;
-    }
-    
-    CuckooHashTableNode::LeafType type = result.node->GetLeafType();
-    switch (type) {
-        case CuckooHashTableNode::LEAF_SINGLE:
-            rangeStart = rangeEnd = result.key;
-            value = result.node->GetLeafData();
-            return true;
-            
-        case CuckooHashTableNode::LEAF_RANGE_START:
-            rangeStart = result.key;
-            // Find the end
-            {
-                NodeResult endResult = QueryLCPWithNode(result.key + 1);
-                if (endResult.found && endResult.node->IsLeaf() && 
-                    endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
-                    rangeEnd = endResult.key;
-                    value = result.node->GetLeafData();
-                    return true;
+    while (true) {
+        uint32_t generation = cur_generation.load();
+        NodeResult result = QueryLCPWithNode(from, generation);
+        if (!result.generationValid) {
+            continue;
+        }
+        if (!result.found || !result.node->IsLeaf()) {
+            return false;
+        }
+
+        bool ret_val = false;
+        
+        CuckooHashTableNode::LeafType type = result.node->GetLeafType();
+        switch (type) {
+            case CuckooHashTableNode::LEAF_SINGLE:
+                rangeStart = rangeEnd = result.key;
+                value = result.node->GetLeafData();
+                ret_val = true;
+                break;
+
+            case CuckooHashTableNode::LEAF_RANGE_START:
+                rangeStart = result.key;
+                // Find the end
+                {
+                    NodeResult endResult = QueryLCPWithNode(result.key + 1, generation);
+                    if (endResult.found && endResult.node->IsLeaf() && 
+                        endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
+                        rangeEnd = endResult.key;
+                        value = result.node->GetLeafData();
+                        ret_val = true;
+                    } else if (!endResult.generationValid) {
+                        continue;
+                    }
+                    if (endResult.node->LoadGeneration() > generation) {
+                        continue;
+                    }
                 }
-            }
-            break;
-            
-        case CuckooHashTableNode::LEAF_RANGE_END:
-            // We're in a range
-            rangeStart = result.node->GetRangeStart();
-            rangeEnd = result.key;
-            // Get data from start node
-            {
-                NodeResult startResult = QueryLCPWithNode(rangeStart);
-                if (startResult.found && startResult.node->IsLeaf()) {
-                    value = startResult.node->GetLeafData();
-                    return true;
+                break;
+                
+            case CuckooHashTableNode::LEAF_RANGE_END:
+                // We're in a range
+                rangeStart = result.node->GetRangeStart();
+                rangeEnd = result.key;
+                // Get data from start node
+                {
+                    NodeResult startResult = QueryLCPWithNode(rangeStart, generation);
+                    if (startResult.found && startResult.node->IsLeaf()) {
+                        value = startResult.node->GetLeafData();
+                        ret_val = true;
+                    } else if (!startResult.generationValid) {
+                        continue;
+                    }
+                    if (startResult.node->LoadGeneration() > generation) {
+                        continue;
+                    }
                 }
-            }
-            break;
+                break;
+        }
+        
+        if (result.node->LoadGeneration() > generation) {
+            continue;
+        }
+        return ret_val;
     }
-    
-    return false;
 }
 
 MlpRangeTree::Iterator::Iterator(MlpRangeTree* t, uint64_t start) 
-    : tree(t), valid(false), nextSearchKey(start) {
+    : tree(t), valid(false), nextSearchKey(start), starting_generation(tree->cur_generation.load()) {
+    QueryAndReturnIfNotValid(result, start, starting_generation);
     
-    NodeResult result = tree->QueryLCPWithNode(start);
     
     if (!result.found || !result.node->IsLeaf()) {
         return;
@@ -394,7 +464,7 @@ MlpRangeTree::Iterator::Iterator(MlpRangeTree* t, uint64_t start)
             currentValue = result.node->GetLeafData();
             // Find end node
             {
-                NodeResult endResult = tree->QueryLCPWithNode(result.key + 1);
+                QueryAndReturnIfNotValid(endResult, result.key + 1, starting_generation);
                 if (endResult.found && endResult.node->IsLeaf() && 
                     endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
                     currentEnd = endResult.key;
@@ -411,7 +481,7 @@ MlpRangeTree::Iterator::Iterator(MlpRangeTree* t, uint64_t start)
             nextSearchKey = result.key + 1;
             // Get value from start node
             {
-                NodeResult startResult = tree->QueryLCPWithNode(currentStart);
+                QueryAndReturnIfNotValid(startResult, currentStart, starting_generation);
                 if (startResult.found && startResult.node->IsLeaf()) {
                     currentValue = startResult.node->GetLeafData();
                     valid = true;
@@ -424,24 +494,15 @@ MlpRangeTree::Iterator::Iterator(MlpRangeTree* t, uint64_t start)
 void MlpRangeTree::Iterator::Next() {
     if (!valid) return;
     
-    NodeResult result = tree->QueryLCPWithNode(nextSearchKey);
-    
-    if (!result.found || !result.node->IsLeaf()) {
-        valid = false;
-        return;
-    }
+    QueryAndReturnIfNotValid(result, nextSearchKey, starting_generation);
     
     CuckooHashTableNode::LeafType type = result.node->GetLeafType();
     
     // If we hit a RANGE_END, skip it (we already processed this range)
     if (type == CuckooHashTableNode::LEAF_RANGE_END) {
         nextSearchKey = result.key + 1;
-        result = tree->QueryLCPWithNode(nextSearchKey);
+        QueryAndReturnIfNotValid(result, nextSearchKey, starting_generation);
         
-        if (!result.found || !result.node->IsLeaf()) {
-            valid = false;
-            return;
-        }
         type = result.node->GetLeafType();
     }
     
@@ -457,7 +518,7 @@ void MlpRangeTree::Iterator::Next() {
             currentValue = result.node->GetLeafData();
             // Find end
             {
-                NodeResult endResult = tree->QueryLCPWithNode(result.key + 1);
+                QueryAndReturnIfNotValid(endResult, result.key + 1, starting_generation);
                 if (endResult.found && endResult.node->IsLeaf() && 
                     endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
                     currentEnd = endResult.key;
