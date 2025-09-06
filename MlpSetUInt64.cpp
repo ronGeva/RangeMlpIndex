@@ -1505,14 +1505,14 @@ void MlpSet::Init(uint32_t maxSetSize)
 
 void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
 {
-	if (successor.has_value() && ((*successor >> 54) == (value >> 54)))
+	if (successor.has_value() && ((*successor >> 48) == (value >> 48)))
 	{
 		// successor occupies the same L1 bit
 		return;
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 54) << 54, found);
+	uint64_t smallest_in_range = LowerBound((value >> 48) << 48, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
@@ -1528,14 +1528,14 @@ void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
 
 void MlpSet::ClearL2Cache(uint64_t value, std::optional<uint64_t> successor)
 {
-	if (successor.has_value() && ((*successor >> 46) == (value >> 46)))
+	if (successor.has_value() && ((*successor >> 40) == (value >> 40)))
 	{
 		// successor occupies the same L2 bit
 		return;
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 46) << 46, found);
+	uint64_t smallest_in_range = LowerBound((value >> 40) << 40, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
