@@ -56,6 +56,14 @@ TEST(MlpSetBenchmarking, MlpSetBenchmarkB)
     bm_run_workloadB(&bm_tree);
 }
 
+TEST(MlpSetBenchmarking, MlpSetBenchmarkC)
+{
+	MlpSetUInt64::MlpSet s;
+    BenchmarkTree bm_tree;
+    MlpSetInitBmTree(s, bm_tree);
+    bm_run_workloadC(&bm_tree);
+}
+
 } // anonymous namespace
 
 
