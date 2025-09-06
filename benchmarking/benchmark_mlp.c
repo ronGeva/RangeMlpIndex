@@ -1,5 +1,8 @@
+#define _GNU_SOURCE
 #include "benchmark_mlp.h"
 #include <stdio.h>
+#include <sched.h>
+#include <pthread.h>
 
 double bm_duration_passed_ms(struct timespec* start, struct timespec* end)
 {
@@ -15,37 +18,56 @@ void bm_add_on_item_mlpindex(void* object, InsertFunc func, unsigned long long k
 	func(object, key);
 }
 
+static void bm_perform_operation(BenchmarkTree* tree, BenchmarkOperation* operation)
+{
+	switch (operation->type)
+	{
+		case BenchmarkOpInsert:
+			tree->Insert(tree->tree, operation->insert_key, operation->insert_entry);
+			break;
+		case BenchmarkOpInsertRange:
+			tree->InsertRange(tree->tree, operation->insert_range_first,
+							  operation->insert_range_last, operation->insert_range_entry);
+			break;
+		case BenchmarkOpFind:
+			tree->Find(tree->tree, &operation->find_index, operation->find_max);
+			break;
+		case BenchmarkOpLoad:
+			tree->Load(tree->tree, operation->load_index);
+			break;
+		case BenchmarkOpErase:
+			tree->Erase(tree->tree, operation->erase_index);
+			break;
+		default:
+			return; // error
+	}
+}
+
+// pin the current thread to the current CPU
+static void bm_pin_thread_to_current_cpu(void) {
+    cpu_set_t cpuset;
+	int cpu = sched_getcpu();
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+
+    pid_t tid = gettid();  // Linux-specific: get thread ID
+    if (sched_setaffinity(tid, sizeof(cpu_set_t), &cpuset) != 0) {
+        perror("sched_setaffinity");
+        exit(1);
+    }
+}
+
 void bm_run_benchmarks(BenchmarkTree* tree, BenchmarkOperation* operations,
                        int operation_count, char* benchmark_name)
 {
 	struct timespec start, end;
+	bm_pin_thread_to_current_cpu();
 
 	clock_gettime(CLOCK_MONOTONIC, &start);
 	for (int i = 0; i < operation_count; i++)
 	{
 		BenchmarkOperation* operation = &operations[i];
-
-		switch (operation->type)
-		{
-			case BenchmarkOpInsert:
-				tree->Insert(tree->tree, operation->insert_key, operation->insert_entry);
-				break;
-			case BenchmarkOpInsertRange:
-				tree->InsertRange(tree->tree, operation->insert_range_first, operation->insert_range_last,
-								  operation->insert_range_entry);
-				break;
-			case BenchmarkOpFind:
-				tree->Find(tree->tree, &operation->find_index, operation->find_max);
-				break;
-			case BenchmarkOpLoad:
-				tree->Load(tree->tree, operation->load_index);
-				break;
-			case BenchmarkOpErase:
-				tree->Erase(tree->tree, operation->erase_index);
-				break;
-			default:
-				return; // error
-		}
+		bm_perform_operation(tree, operation);
 	}
 	clock_gettime(CLOCK_MONOTONIC, &end);
 
