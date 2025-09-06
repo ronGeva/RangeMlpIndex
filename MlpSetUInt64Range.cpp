@@ -370,4 +370,114 @@ bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& range
     return false;
 }
 
+MlpRangeTree::Iterator::Iterator(MlpRangeTree* t, uint64_t start) 
+    : tree(t), valid(false), nextSearchKey(start) {
+    
+    NodeResult result = tree->QueryLCPWithNode(start);
+    
+    if (!result.found || !result.node->IsLeaf()) {
+        return;
+    }
+    
+    CuckooHashTableNode::LeafType type = result.node->GetLeafType();
+    
+    switch (type) {
+        case CuckooHashTableNode::LEAF_SINGLE:
+            currentStart = currentEnd = result.key;
+            currentValue = result.node->GetLeafData();
+            nextSearchKey = result.key + 1;
+            valid = true;
+            break;
+            
+        case CuckooHashTableNode::LEAF_RANGE_START:
+            currentStart = result.key;
+            currentValue = result.node->GetLeafData();
+            // Find end node
+            {
+                NodeResult endResult = tree->QueryLCPWithNode(result.key + 1);
+                if (endResult.found && endResult.node->IsLeaf() && 
+                    endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
+                    currentEnd = endResult.key;
+                    nextSearchKey = endResult.key + 1;
+                    valid = true;
+                }
+            }
+            break;
+            
+        case CuckooHashTableNode::LEAF_RANGE_END:
+            // We're inside a range
+            currentEnd = result.key;
+            currentStart = result.node->GetRangeStart();
+            nextSearchKey = result.key + 1;
+            // Get value from start node
+            {
+                NodeResult startResult = tree->QueryLCPWithNode(currentStart);
+                if (startResult.found && startResult.node->IsLeaf()) {
+                    currentValue = startResult.node->GetLeafData();
+                    valid = true;
+                }
+            }
+            break;
+    }
+}
+
+void MlpRangeTree::Iterator::Next() {
+    if (!valid) return;
+    
+    NodeResult result = tree->QueryLCPWithNode(nextSearchKey);
+    
+    if (!result.found || !result.node->IsLeaf()) {
+        valid = false;
+        return;
+    }
+    
+    CuckooHashTableNode::LeafType type = result.node->GetLeafType();
+    
+    // If we hit a RANGE_END, skip it (we already processed this range)
+    if (type == CuckooHashTableNode::LEAF_RANGE_END) {
+        nextSearchKey = result.key + 1;
+        result = tree->QueryLCPWithNode(nextSearchKey);
+        
+        if (!result.found || !result.node->IsLeaf()) {
+            valid = false;
+            return;
+        }
+        type = result.node->GetLeafType();
+    }
+    
+    switch (type) {
+        case CuckooHashTableNode::LEAF_SINGLE:
+            currentStart = currentEnd = result.key;
+            currentValue = result.node->GetLeafData();
+            nextSearchKey = result.key + 1;
+            break;
+            
+        case CuckooHashTableNode::LEAF_RANGE_START:
+            currentStart = result.key;
+            currentValue = result.node->GetLeafData();
+            // Find end
+            {
+                NodeResult endResult = tree->QueryLCPWithNode(result.key + 1);
+                if (endResult.found && endResult.node->IsLeaf() && 
+                    endResult.node->GetLeafType() == CuckooHashTableNode::LEAF_RANGE_END) {
+                    currentEnd = endResult.key;
+                    nextSearchKey = endResult.key + 1;
+                } else {
+                    valid = false;
+                    return;
+                }
+            }
+            break;
+            
+        default:
+            valid = false;
+            break;
+    }
+}
+
+
+
+
+
+
 } // namespace MlpSetUInt64

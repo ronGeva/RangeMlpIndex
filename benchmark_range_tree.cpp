@@ -410,21 +410,21 @@ int main(int argc, char** argv) {
     cout << "========================================" << endl;
 
     // Run different benchmark scenarios
-    //benchmark_single_points(10000);
-    // benchmark_single_points(100000);
-    // benchmark_single_points(1000000);
+    benchmark_single_points(10000);
+    benchmark_single_points(100000);
+    benchmark_single_points(1000000);
     
-    // benchmark_ranges(1000, 100);      // 1K ranges, avg size 100
-    // benchmark_ranges(10000, 1000);    // 10K ranges, avg size 1K
-    // benchmark_ranges(100000, 10);     // 100K small ranges
+    benchmark_ranges(1000, 100);      // 1K ranges, avg size 100
+    benchmark_ranges(10000, 1000);    // 10K ranges, avg size 1K
+    benchmark_ranges(100000, 10);     // 100K small ranges
     
-    // benchmark_mixed_workload(100000);
-    // benchmark_mixed_workload(1000000);
+    benchmark_mixed_workload(100000);
+    benchmark_mixed_workload(1000000);
     
-    // benchmark_large_ranges(100);
+    benchmark_large_ranges(100);
     benchmark_large_ranges(1000);
     
-    // compare_with_std_map();
+    compare_with_std_map();
     
     // benchmark_stress_test();
     
