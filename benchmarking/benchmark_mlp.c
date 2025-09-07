@@ -43,10 +43,8 @@ static void bm_perform_operation(BenchmarkTree* tree, BenchmarkOperation* operat
 	}
 }
 
-// pin the current thread to the current CPU
-static void bm_pin_thread_to_current_cpu(void) {
+static void bm_pin_thread_to_cpu(int cpu) {
     cpu_set_t cpuset;
-	int cpu = sched_getcpu();
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
 
@@ -55,6 +53,12 @@ static void bm_pin_thread_to_current_cpu(void) {
         perror("sched_setaffinity");
         exit(1);
     }
+}
+
+// pin the current thread to the current CPU
+static void bm_pin_thread_to_current_cpu(void)
+{
+	bm_pin_thread_to_cpu(sched_getcpu());
 }
 
 void bm_run_benchmarks(BenchmarkTree* tree, BenchmarkOperation* operations,
@@ -106,23 +110,33 @@ void bm_run_workloadB(BenchmarkTree* tree)
 	bm_run_benchmarks(tree, operations, 20000, "B");
 }
 
-typedef struct _WorkLoadRoutineContext {
+typedef struct _WorkLoadRoutineOperations {
 	BenchmarkOperation* operations;
 	int operation_count;
 	BenchmarkTree* tree;
+	unsigned long iterations;
+} WorkLoadRoutineOperations;
+
+typedef struct _WorkLoadRoutineContext {
+	int cpu;
+	WorkLoadRoutineOperations* operations;
 } WorkLoadRoutineContext;
 
 static void* bm_thread_perform_operations(void* context)
 {
 	WorkLoadRoutineContext* routine_context = context;
-	BenchmarkTree* tree = routine_context->tree;
+	WorkLoadRoutineOperations* operations = routine_context->operations;
+	BenchmarkTree* tree = operations->tree;
 
-	bm_pin_thread_to_current_cpu();
+	bm_pin_thread_to_cpu(routine_context->cpu);
 
-	for (int i = 0; i < routine_context->operation_count; i++)
+	for	(int iteration = 0; iteration < operations->iterations; iteration++)
 	{
-		BenchmarkOperation* operation = &routine_context->operations[i];
-		bm_perform_operation(tree, operation);
+		for (int i = 0; i < operations->operation_count; i++)
+		{
+			BenchmarkOperation* operation = &operations->operations[i];
+			bm_perform_operation(tree, operation);
+		}
 	}
 
 	return NULL;
@@ -155,22 +169,39 @@ void bm_run_workloadC(BenchmarkTree* tree)
 	}
 
 	pthread_t threads[4];
+	WorkLoadRoutineOperations writer_ops;
+	writer_ops.operations = writer_operations;
+	writer_ops.operation_count = 200000;
+	writer_ops.tree = tree;
+	writer_ops.iterations = 3;
 	WorkLoadRoutineContext writer_context;
-	writer_context.operations = writer_operations;
-	writer_context.operation_count = 200000;
-	writer_context.tree = tree;
+	writer_context.operations = &writer_ops;
+	writer_context.cpu = 0;
 
-	WorkLoadRoutineContext reader_context;
-	reader_context.operations = reader_operations;
-	reader_context.operation_count = 200000;
-	reader_context.tree = tree;
+	WorkLoadRoutineOperations reader_ops;
+	reader_ops.operations = reader_operations;
+	reader_ops.operation_count = 200000;
+	reader_ops.tree = tree;
+	reader_ops.iterations = 3;
+	WorkLoadRoutineContext reader_context1 = {
+		.cpu = 1,
+		.operations = &reader_ops
+	};
+	WorkLoadRoutineContext reader_context2 = {
+		.cpu = 2,
+		.operations = &reader_ops
+	};
+	WorkLoadRoutineContext reader_context3 = {
+		.cpu = 3,
+		.operations = &reader_ops
+	};
 
 	struct timespec start, end;
 	clock_gettime(CLOCK_MONOTONIC, &start);
 	pthread_create(&threads[0], NULL, &bm_thread_perform_operations, &writer_context);
-	pthread_create(&threads[1], NULL, &bm_thread_perform_operations, &reader_context);
-	pthread_create(&threads[2], NULL, &bm_thread_perform_operations, &reader_context);
-	pthread_create(&threads[3], NULL, &bm_thread_perform_operations, &reader_context);
+	pthread_create(&threads[1], NULL, &bm_thread_perform_operations, &reader_context1);
+	pthread_create(&threads[2], NULL, &bm_thread_perform_operations, &reader_context2);
+	pthread_create(&threads[3], NULL, &bm_thread_perform_operations, &reader_context3);
 
 	pthread_join(threads[3], NULL);
 	pthread_join(threads[2], NULL);
