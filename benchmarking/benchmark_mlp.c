@@ -4,6 +4,7 @@
 #include <sched.h>
 #include <pthread.h>
 #include <unistd.h> // Required for sleep()
+#include <stdlib.h> // For rand() and srand()
 
 double bm_duration_passed_ms(struct timespec* start, struct timespec* end)
 {
@@ -255,9 +256,11 @@ typedef struct _BenchmarkDSettings {
 
 void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* settings)
 {
-	BenchmarkOperation* writer_operations;
+	WorkLoadRoutineContext* reader_contexts = NULL;
+	BenchmarkOperation* writer_operations = NULL;
 	BenchmarkOperation** reader_operations_array =
 	 malloc(sizeof(BenchmarkOperation*) * settings->number_of_readers);
+	pthread_t* threads = NULL;
 
 	int writer_operation_count;
 	int reader_operation_count;
@@ -311,13 +314,64 @@ void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* set
 
 			break;
 		}
+		case AccessPatternRandom:
+		{
+			srand(time(NULL));
+
+			writer_operation_count = 10000;
+			writer_operations = malloc(sizeof(BenchmarkOperation) * writer_operation_count);
+			for (int i = 0; i < writer_operation_count; i++)
+			{
+				if (rand() % 3 == 0)
+				{
+					writer_operations[i].erase_index = rand();
+					writer_operations[i].type = BenchmarkOpErase;
+				}
+				else
+				{
+					int start = rand();
+					int possible_range = 0x7fffffff - start;
+					int end = start + (rand() % possible_range);
+					writer_operations[i].insert_range_entry = NULL;
+					writer_operations[i].insert_range_first = start;
+					writer_operations[i].insert_range_last = end;
+					writer_operations[i].type = BenchmarkOpInsertRange;
+				}
+			}
+			
+			reader_operation_count = 10000;
+			for (int i = 0; i < settings->number_of_readers; i++)
+			{
+				reader_operations_array[i] = malloc(sizeof(BenchmarkOperation) * reader_operation_count);
+				for (int j = 0; j < reader_operation_count; j++)
+				{
+					int index = rand();
+					if (rand() % 2 == 0)
+					{
+						reader_operations_array[i][j].load_index = index;
+						reader_operations_array[i][j].type = BenchmarkOpLoad;
+					}
+					else
+					{
+						int possible_range = 0x7fffffff - index;
+						int max_index = index + (rand() % possible_range);
+
+						reader_operations_array[i][j].find_index = index;
+						reader_operations_array[i][j].find_max = max_index;
+						reader_operations_array[i][j].type = BenchmarkOpFind;
+					}
+				}
+			}
+
+			break;
+		}
 		default:
 			return;
 	}
 
 	int stop_event;
 	stop_event = 0;
-	pthread_t* threads = malloc(sizeof(pthread_t) * (settings->number_of_readers + 1));
+	threads = malloc(sizeof(pthread_t) * (settings->number_of_readers + 1));
 	WorkLoadRoutineOperations writer_ops = { 0 };
 	writer_ops.operations = writer_operations;
 	writer_ops.operation_count = writer_operation_count;
@@ -328,8 +382,7 @@ void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* set
 	writer_context.operations = &writer_ops;
 	writer_context.cpu = 0;
 
-	WorkLoadRoutineContext* reader_contexts =
-	 malloc(sizeof(WorkLoadRoutineContext) * settings->number_of_readers);
+	reader_contexts = malloc(sizeof(WorkLoadRoutineContext) * settings->number_of_readers);
 	
 	for (int i = 0; i < settings->number_of_readers; i++)
 	{
@@ -343,15 +396,15 @@ void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* set
 	}
 	
 	pthread_create(&threads[0], NULL, &bm_thread_perform_operations, &writer_context);
-	for (int i = 0; i < settings->number_of_readers; i++)
+	for (int i = 1; i <= settings->number_of_readers; i++)
 	{
-		pthread_create(&threads[i + 1], NULL, &bm_thread_perform_operations, &reader_contexts[i]);
+		pthread_create(&threads[i], NULL, &bm_thread_perform_operations, &reader_contexts[i-1]);
 	}
 
 	sleep(settings->duration_seconds);
 	stop_event = 1;
 
-	for (int i = settings->number_of_readers - 1; i >= 0; i--)
+	for (int i = settings->number_of_readers; i > 0; i--)
 	{
 		pthread_join(threads[i], NULL);
 	}
@@ -364,9 +417,10 @@ void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* set
 	}
 	readers_operations /= settings->number_of_readers;
 
-	printf("Benchmark D: average reader operations done in %d seconds: %llu. Writer operations: %llu, access pattern=%d\n",
+	printf("Benchmark D: average reader operations done in %d seconds: %llu. Writer operations: %llu, access pattern=%d"
+		   " number of readers=%d\n",
 		   settings->duration_seconds, readers_operations, writer_context.operations->operations_done,
-		   settings->access_pattern);
+		   settings->access_pattern, settings->number_of_readers);
 
 	// free resources
 	for (int i = 0; i < settings->number_of_readers; i++)
@@ -394,4 +448,223 @@ void bm_run_workloadD(BenchmarkTree* tree)
 
 	settings.access_pattern = AccessPatternExclusiveRanges;
 	bm_run_workloadD_with_settings(tree, &settings);
+
+	settings.access_pattern = AccessPatternRandom;
+	bm_run_workloadD_with_settings(tree, &settings);
+}
+
+typedef struct _BenchmarkSettingsRandom {
+	int number_of_readers;
+	int writer_on;
+	int number_of_reader_operations;
+	int perecentage_find_operations;
+	int duration_seconds;
+	int initial_inserts;
+	int writer_operation_count;
+} BenchmarkSettingsRandom;
+
+void bm_insert_random_ranges(BenchmarkTree* tree, int amount_of_inserts)
+{
+	BenchmarkOperation* writer_operations = NULL;
+	srand(time(NULL));
+	writer_operations = malloc(sizeof(BenchmarkOperation) * amount_of_inserts);
+	for (int i = 0; i < amount_of_inserts; i++)
+	{
+		int start = rand();
+		int possible_range = 0x7fffffff - start;
+		int end = start + (rand() % possible_range);
+		writer_operations[i].insert_range_entry = NULL;
+		writer_operations[i].insert_range_first = start;
+		writer_operations[i].insert_range_last = end;
+		writer_operations[i].type = BenchmarkOpInsertRange;
+	}
+
+	bm_perform_operations_once(tree, writer_operations, amount_of_inserts);
+
+	free(writer_operations);
+}
+
+BenchmarkOperation* bm_create_random_writer_operations(BenchmarkSettingsRandom* settings)
+{
+	if (!settings->writer_on)
+		return NULL;
+
+	BenchmarkOperation* writer_operations = NULL;
+	int writer_operation_count = settings->writer_operation_count;
+	writer_operations = malloc(sizeof(BenchmarkOperation) * writer_operation_count);
+	for (int i = 0; i < writer_operation_count; i++)
+	{
+		// randomly choose whether to insert an entry or remove an entry
+		if (rand() % 2 == 0)
+		{
+			writer_operations[i].erase_index = rand();
+			writer_operations[i].type = BenchmarkOpErase;
+		}
+		else
+		{
+			int start = rand();
+			int possible_range = 0x7fffffff - start;
+			int end = start + (rand() % possible_range);
+			writer_operations[i].insert_range_entry = NULL;
+			writer_operations[i].insert_range_first = start;
+			writer_operations[i].insert_range_last = end;
+			writer_operations[i].type = BenchmarkOpInsertRange;
+		}
+	}
+
+	return writer_operations;
+}
+
+BenchmarkOperation** bm_create_random_reader_operations(BenchmarkSettingsRandom* settings)
+{
+	BenchmarkOperation** reader_operations_array =
+	 malloc(sizeof(BenchmarkOperation*) * settings->number_of_readers);
+
+	int reader_operation_count = settings->number_of_reader_operations;
+	for (int i = 0; i < settings->number_of_readers; i++)
+	{
+		reader_operations_array[i] = malloc(sizeof(BenchmarkOperation) * reader_operation_count);
+		for (int j = 0; j < reader_operation_count; j++)
+		{
+			int index = rand();
+			// randomly call load or find
+			if (rand() % 100 >= settings->perecentage_find_operations)
+			{
+				reader_operations_array[i][j].load_index = index;
+				reader_operations_array[i][j].type = BenchmarkOpLoad;
+			}
+			else
+			{
+				int possible_range = 0x7fffffff - index;
+				int max_index = index + (rand() % possible_range);
+
+				reader_operations_array[i][j].find_index = index;
+				reader_operations_array[i][j].find_max = max_index;
+				reader_operations_array[i][j].type = BenchmarkOpFind;
+			}
+		}
+	}
+
+	return reader_operations_array;
+}
+
+void bm_run_workload_random_accesses(BenchmarkTree* tree, BenchmarkSettingsRandom* settings)
+{
+	WorkLoadRoutineContext* reader_contexts = NULL;
+	BenchmarkOperation* writer_operations = NULL;
+	BenchmarkOperation** reader_operations_array =
+	 malloc(sizeof(BenchmarkOperation*) * settings->number_of_readers);
+	pthread_t* threads = NULL;
+
+	bm_insert_random_ranges(tree, settings->initial_inserts);
+
+	writer_operations = bm_create_random_writer_operations(settings);
+	reader_operations_array = bm_create_random_reader_operations(settings);
+
+	int stop_event;
+	stop_event = 0;
+	threads = malloc(sizeof(pthread_t) * (settings->number_of_readers + 1));
+	WorkLoadRoutineOperations writer_ops = {
+		.stop_event = &stop_event,
+		.operations = writer_operations,
+		.operation_count = settings->writer_operation_count,
+		.tree = tree,
+		.operations_done = 0
+	};
+
+	WorkLoadRoutineContext writer_context = {
+		.cpu = 0,
+		.operations = &writer_ops
+	};
+	
+	// initialize reader contexts
+	reader_contexts = malloc(sizeof(WorkLoadRoutineContext) * settings->number_of_readers);
+	for (int i = 0; i < settings->number_of_readers; i++)
+	{
+		reader_contexts[i].cpu = i + 1;
+		reader_contexts[i].operations = malloc(sizeof(WorkLoadRoutineOperations));
+		reader_contexts[i].operations->operation_count = settings->number_of_reader_operations;
+		reader_contexts[i].operations->stop_event = &stop_event;
+		reader_contexts[i].operations->operations = reader_operations_array[i];
+		reader_contexts[i].operations->tree = tree;
+		reader_contexts[i].operations->operations_done = 0;
+	}
+	
+	// create threads
+	if (settings->writer_on)
+	{
+		pthread_create(&threads[0], NULL, &bm_thread_perform_operations, &writer_context);
+	}
+	for (int i = 1; i <= settings->number_of_readers; i++)
+	{
+		pthread_create(&threads[i], NULL, &bm_thread_perform_operations, &reader_contexts[i-1]);
+	}
+
+	sleep(settings->duration_seconds);
+	stop_event = 1;
+
+	for (int i = settings->number_of_readers; i > 0; i--)
+	{
+		pthread_join(threads[i], NULL);
+	}
+	if (settings->writer_on)
+	{
+		pthread_join(threads[0], NULL);
+	}
+
+	unsigned long long readers_operations = 0;
+	for (int i = 0; i < settings->number_of_readers; i++)
+	{
+		readers_operations += reader_contexts[i].operations->operations_done;
+	}
+	readers_operations /= settings->number_of_readers;
+
+	printf("Benchmark E: average reader operations done in %d seconds=%llu, readers=%d, init_inserts=%d"
+		   ", precentage_find=%d, writer_on=%d, writer_ops_count=%d\n",
+		   settings->duration_seconds, readers_operations, settings->number_of_readers, settings->initial_inserts,
+		   settings->perecentage_find_operations, settings->writer_on, settings->writer_operation_count);
+
+	// free resources
+	for (int i = 0; i < settings->number_of_readers; i++)
+	{
+		free(reader_contexts[i].operations);
+		free(reader_operations_array[i]);
+	}
+	free(reader_operations_array);
+	free(reader_contexts);
+
+	if (settings->writer_on)
+	{
+		free(writer_operations);
+	}
+
+	free(threads);
+}
+
+void bm_run_workloadE(BenchmarkTree* tree)
+{
+	// modify the for loops to control the settings of the benchmark
+	for (int writer_on = 1; writer_on < 2; writer_on++)
+	{
+		for (int readers_count = 1; readers_count <= 8; readers_count *= 2)
+		{
+			for (int initial_inserts = 100; initial_inserts <= 100000; initial_inserts*=10)
+			{
+				for (int percentage_find = 20; percentage_find < 100; percentage_find+=20)
+				{
+					BenchmarkSettingsRandom settings = {
+						.duration_seconds = 2,
+						.writer_operation_count = 10000000,
+						.number_of_reader_operations = 10000,
+						.writer_on = writer_on,
+						.number_of_readers = readers_count,
+						.initial_inserts = initial_inserts,
+						.perecentage_find_operations = percentage_find
+					};
+
+					bm_run_workload_random_accesses(tree, &settings);
+				}
+			}
+		}
+	}
 }

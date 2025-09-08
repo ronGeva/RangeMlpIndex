@@ -77,6 +77,8 @@ void bm_run_workloadC(BenchmarkTree* tree);
 
 void bm_run_workloadD(BenchmarkTree* tree);
 
+void bm_run_workloadE(BenchmarkTree* tree);
+
 #ifdef __cplusplus
 }
 #endif
