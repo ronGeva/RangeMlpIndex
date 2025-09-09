@@ -544,6 +544,8 @@ std::atomic<uint32_t> cur_generation;
 	//
 	MlpSet::Promise LowerBound(uint64_t value);
 
+	uint64_t WriterLowerBound(uint64_t value, bool& found);
+
 	void ResetGenerationsIfNeeded(uint32_t &generation);
 	
 	// For debug purposes only

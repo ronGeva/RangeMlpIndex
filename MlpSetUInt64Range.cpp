@@ -125,9 +125,9 @@ bool MlpRangeTree::Store(uint64_t key, void* value) { //
         uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
         uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
         
-        int lcpLen = m_hashTable.QueryLCP(key, ilen, 
+        int lcpLen = m_hashTable.QueryLCPInternal(key, ilen, 
                                           allPositions1, allPositions2, 
-                                          expectedHash, cur_generation);
+                                          expectedHash, UINT32_MAX);
         
         if (lcpLen == 8) {
             uint32_t pos = allPositions1[ilen-1];
@@ -172,7 +172,6 @@ bool MlpRangeTree::InsertRange(uint64_t start, uint64_t end, void* value) { //
 
     // Check if range is empty
     NodeResult current = QueryLCPWithNode(start, UINT32_MAX);
-    
     // Check if we start inside an existing range
     if (current.found) {
         if (current.node->IsLeaf() && 
@@ -180,14 +179,12 @@ bool MlpRangeTree::InsertRange(uint64_t start, uint64_t end, void* value) { //
             return false; // Starting inside an existing range
         }
 
-        
         // Check all nodes in [start, end]
         while (current.found && current.key <= end) {
             // Any node in our range means it's not empty
             return false;
         }
     }
-    
     // Range is empty, insert it
     bool inserted = InsertRangeNodes(start, end, value, generation);
     cur_generation.store(generation);
@@ -324,14 +321,12 @@ void MlpRangeTree::ClearRange(uint64_t start, uint64_t end) {
 
 bool MlpRangeTree::Erase(uint64_t key) { //
     NodeResult result = QueryLCPWithNode(key, UINT32_MAX);
-    
     if (!result.found || !result.node->IsLeaf()) {
         return false;
     }
 
     uint32_t generation = cur_generation.load() + 1;
     ResetGenerationsIfNeeded(generation);
-    
     CuckooHashTableNode::LeafType type = result.node->GetLeafType();
     bool ret_val = false;
     switch (type) {

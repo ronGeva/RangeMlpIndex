@@ -1505,7 +1505,7 @@ void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 48) << 48, found);
+	uint64_t smallest_in_range = WriterLowerBound((value >> 48) << 48, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
@@ -1528,7 +1528,7 @@ void MlpSet::ClearL2Cache(uint64_t value, std::optional<uint64_t> successor)
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 40) << 40, found);
+	uint64_t smallest_in_range = WriterLowerBound((value >> 40) << 40, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
@@ -1551,7 +1551,7 @@ void MlpSet::ClearRootCache(uint64_t value, std::optional<uint64_t> successor)
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 56) << 56, found);
+	uint64_t smallest_in_range = WriterLowerBound((value >> 56) << 56, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
@@ -1568,7 +1568,7 @@ void MlpSet::ClearRootCache(uint64_t value, std::optional<uint64_t> successor)
 std::optional<uint64_t> MlpSet::ClearLowLevelCaches(uint64_t value)
 {
 	bool found_successor = false;
-	uint64_t successor = LowerBound(value + 1, found_successor);
+	uint64_t successor = WriterLowerBound(value + 1, found_successor);
 	std::optional<uint64_t> opt_successor;
 
 	if (found_successor)
@@ -1588,6 +1588,7 @@ bool MlpSet::Remove(uint64_t value, uint32_t generation = UINT32_MAX)
 	uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
 	uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
+	DEBUG("HERE!");
 
 	int lcpLen = m_hashTable.QueryLCPInternal(value, 
 		ilen /*out*/, 
@@ -1603,12 +1604,15 @@ bool MlpSet::Remove(uint64_t value, uint32_t generation = UINT32_MAX)
 		return false;
 	}
 
+	DEBUG("HERE!");
+
 	uint32_t cur_gen = generation;
 	bool should_take_generation = generation == UINT32_MAX;
 	if (should_take_generation) {
 		generation = cur_generation.load() + 1;
 		ResetGenerationsIfNeeded(cur_gen);
 	}
+	DEBUG("HERE!");
 
 	std::optional<uint64_t> opt_successor = ClearLowLevelCaches(value);
 
@@ -1619,6 +1623,7 @@ bool MlpSet::Remove(uint64_t value, uint32_t generation = UINT32_MAX)
 	bool remove_child = true;
 	for (ilen--; ilen > 2; ilen--)
 	{
+		DEBUG("HERE!");
 		// find the right position
 		uint32_t pos = allPositions1[ilen - 1];
 		if (!m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
@@ -2140,6 +2145,14 @@ _flat_mapping:
 	//
 	found = false;
 	return CuckooHashTable::LookupMustExistPromise();
+}
+
+uint64_t MlpSet::WriterLowerBound(uint64_t value, bool &found) {
+	MlpSet::Promise prom = LowerBoundInternal(value, found, UINT32_MAX);
+	if (found) {
+		return prom.Resolve();
+	}
+	return UINT64_MAX;
 }
 
 // This version wasn't safe beforehand as well, so it doesn't need to change.
