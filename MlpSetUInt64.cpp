@@ -1581,7 +1581,7 @@ std::optional<uint64_t> MlpSet::ClearLowLevelCaches(uint64_t value)
 	ClearL2Cache(value, opt_successor);
 	return opt_successor;
 }
-bool MlpSet::Remove(uint64_t value, uint32_t generation = UINT32_MAX)
+bool MlpSet::Remove(uint64_t value, uint32_t generation)
 {
 	uint32_t ilen;
 	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
@@ -1670,7 +1670,7 @@ bool MlpSet::Remove(uint64_t value, uint32_t generation = UINT32_MAX)
 	return true;
 }
 
-bool MlpSet::Insert(uint64_t value, uint32_t generation = UINT32_MAX)
+bool MlpSet::Insert(uint64_t value, uint32_t generation)
 {
 	assert(m_hasCalledInit);
 	bool should_take_generation = generation == UINT32_MAX;
@@ -1679,6 +1679,7 @@ bool MlpSet::Insert(uint64_t value, uint32_t generation = UINT32_MAX)
 		cur_gen = cur_generation.load() + 1;
 		ResetGenerationsIfNeeded(cur_gen);
 	}
+	std::cout << "should_take_generation = " << should_take_generation << " cur_gen = " << cur_gen << std::endl;
 	
 	int lcpLen;
 	// Handle LCP < 2 case first
@@ -1998,9 +1999,14 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			{
 				return CuckooHashTable::LookupMustExistPromise();
 			}
-			if (lbChild == -1) 
+
+			if (lbChild == -1)
 			{
 				goto _parent;
+			}
+			if (lbChild == child) {
+				std::cout << "lbChild == child = " << std::hex << lbChild << " " << child << " value = " << std::hex << value << std::dec << " dlen = " << dlen << " lcpLen = " << lcpLen << std::endl;
+				// return CuckooHashTable::LookupMustExistPromise();
 			}
 			assert(lbChild != child);
 			// return the minimum value in lbChild subtree

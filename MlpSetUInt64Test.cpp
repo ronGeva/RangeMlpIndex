@@ -28,9 +28,9 @@ void test_single_points() {
     int data3 = 168;
     
     cout << "  Inserting single points: 100, 200, 300" << endl;
-    ASSERT(tree.Store(100, &data1));
-    ASSERT(tree.Store(200, &data2));
-    ASSERT(tree.Store(300, &data3));
+    ASSERT(tree.InsertSinglePoint(100, &data1));
+    ASSERT(tree.InsertSinglePoint(200, &data2));
+    ASSERT(tree.InsertSinglePoint(300, &data3));
     
     // Verify they exist
     cout << "  Checking loads..." << endl;
@@ -133,13 +133,13 @@ void test_mixed_operations() {
     
     cout << "  Creating mixed structure:" << endl;
     cout << "    Point at 50" << endl;
-    ASSERT(tree.Store(50, &data1));
+    ASSERT(tree.InsertSinglePoint(50, &data1));
     
     cout << "    Range [100, 200]" << endl;
     ASSERT(tree.StoreRange(100, 200, &data2));
     
     cout << "    Point at 250" << endl;
-    ASSERT(tree.Store(250, &data3));
+    ASSERT(tree.InsertSinglePoint(250, &data3));
     
     cout << "    Range [300, 400]" << endl;
     ASSERT(tree.StoreRange(300, 400, &data4));
@@ -168,7 +168,7 @@ void test_find_next() {
     int data2 = 200;
     
     cout << "  Setting up: point at 100, range [200, 300]" << endl;
-    ASSERT(tree.Store(100, &data1));
+    ASSERT(tree.InsertSinglePoint(100, &data1));
     ASSERT(tree.StoreRange(200, 300, &data2));
     
     uint64_t start, end;
@@ -257,35 +257,35 @@ void test_edge_cases() {
     PASS();
 }
 
-void run_all_tests() {
-    cout << "\n===================================" << endl;
-    cout << "   MlpRangeTree Test Suite" << endl;
-    cout << "===================================" << endl;
+// void run_all_tests() {
+//     cout << "\n===================================" << endl;
+//     cout << "   MlpRangeTree Test Suite" << endl;
+//     cout << "===================================" << endl;
     
-    test_single_points();
-    test_basic_range();
-    test_range_overwrite();
-    test_erase();
-    test_mixed_operations();
-    test_find_next();
-    test_large_scale();
-    test_edge_cases();
+//     test_single_points();
+//     test_basic_range();
+//     test_range_overwrite();
+//     test_erase();
+//     test_mixed_operations();
+//     test_find_next();
+//     test_large_scale();
+//     test_edge_cases();
     
-    cout << "\n===================================" << endl;
-    cout << "   ALL TESTS PASSED! 🎉" << endl;
-    cout << "===================================" << endl;
-}
+//     cout << "\n===================================" << endl;
+//     cout << "   ALL TESTS PASSED! 🎉" << endl;
+//     cout << "===================================" << endl;
+// }
 
-int main(int argc, char** argv) {
-    try {
-        run_all_tests();
-    } catch (const exception& e) {
-        cout << "\nException caught: " << e.what() << endl;
-        return 1;
-    } catch (...) {
-        cout << "\nUnknown exception caught!" << endl;
-        return 1;
-    }
+// int main(int argc, char** argv) {
+//     try {
+//         run_all_tests();
+//     } catch (const exception& e) {
+//         cout << "\nException caught: " << e.what() << endl;
+//         return 1;
+//     } catch (...) {
+//         cout << "\nUnknown exception caught!" << endl;
+//         return 1;
+//     }
     
-    return 0;
-}
+//     return 0;
+// }

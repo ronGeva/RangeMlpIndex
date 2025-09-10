@@ -8,9 +8,7 @@ class MlpRangeTree : public MlpSet {
 public:
     // Initialize the range tree
     using MlpSet::Init;  // Use parent's Init
-    
-    // Store a value at a specific key (overwrites any existing range/value)
-    bool Store(uint64_t key, void* value);
+    bool InsertSinglePoint(uint64_t key, void* value);
     
     // Store a value for an entire range [start, end] inclusive
     bool StoreRange(uint64_t start, uint64_t end, void* value);
