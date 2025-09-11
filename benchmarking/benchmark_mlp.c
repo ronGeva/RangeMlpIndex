@@ -552,8 +552,7 @@ void bm_run_workload_random_accesses(BenchmarkTree* tree, BenchmarkSettingsRando
 {
 	WorkLoadRoutineContext* reader_contexts = NULL;
 	BenchmarkOperation* writer_operations = NULL;
-	BenchmarkOperation** reader_operations_array =
-	 malloc(sizeof(BenchmarkOperation*) * settings->number_of_readers);
+	BenchmarkOperation** reader_operations_array = NULL;
 	pthread_t* threads = NULL;
 
 	bm_insert_random_ranges(tree, settings->initial_inserts);
