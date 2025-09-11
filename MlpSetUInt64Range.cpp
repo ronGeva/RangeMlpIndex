@@ -1,11 +1,16 @@
 #include "MlpSetUInt64Range.h"
 #include <vector>
+#include <iostream>
 
 namespace MlpSetUInt64 {
 
     #define QueryAndReturnIfNotValid(resultName, key, generation) \
     NodeResult resultName = tree->QueryLCPWithNode(key, generation); \
     if (!resultName.generationValid) { \
+        valid = false; \
+        return; \
+    } \
+    if (!resultName.found) { \
         valid = false; \
         return; \
     }
@@ -15,6 +20,7 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key, uint32_t g
     NodeResult result;
     result.found = false;
     result.node = nullptr;
+    result.generationValid = true;
     
     // First find using LowerBound
     bool found;
@@ -43,7 +49,6 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key, uint32_t g
         result.generationValid = false;
         return result;
     }
-    result.generationValid = true;
 
     
     if (lcpLen == 8) {

@@ -62,7 +62,7 @@ struct CuckooHashTableNode
 	// 3 bit: # of childs if using internal map, 0 + bitmap's highest 2 bits if using external bitmap
 	// 18 bit: hash 
 	//
-	uint32_t hash;	
+	std::atomic<uint32_t> hash;
 	// points to min node in this subtree - UNUSED in the original implementation
 	// generation first byte is used for num of children, second byte for generation.
 	std::atomic<uint32_t> generation;
@@ -71,7 +71,7 @@ struct CuckooHashTableNode
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
 	// the whole minKey is the min node's key
 	//
-	uint64_t minKey;
+	std::atomic<uint64_t> minKey;
 	// the child map
 	// when using internal map, each byte stores a child
 	// when using external bitmap, each bit represent whether the corresponding child exists
@@ -82,8 +82,8 @@ struct CuckooHashTableNode
 
 	// Copy fields from another node in a way that works with std::atomic
 	void CopyWithoutGeneration(const CuckooHashTableNode& other) {
-		hash = other.hash;
-		minKey = other.minKey;
+		hash.store(other.hash.load());
+		minKey.store(other.minKey.load());
 		childMap.store(other.childMap.load());
 		SetChildNum(other.GetChildNum());
 	}
@@ -91,16 +91,13 @@ struct CuckooHashTableNode
 	
 	void Clear()
 	{
-		hash = 0;
+		hash.store(0);
 	    SET_NUM_CHILDREN(generation,0);
-		minKey = 0;
+		minKey.store(0);
 		childMap.store(0);
 	}
 
-	void SetGeneration(uint32_t new_generation)
-	{
-		generation.store((generation.load() & 0xff000000) | (new_generation & 0xffffff));
-	}
+	void SetGeneration(uint32_t new_generation);
 
 	uint32_t LoadGeneration()
 	{
@@ -385,6 +382,17 @@ public:
 				return h2->LoadGeneration() <= generation;
 			}
 		}
+
+		uint32_t GetGeneration() {
+			if (h2 == nullptr || h1->IsEqual(expectedHash, shiftLen, shiftedKey))
+			{
+				return h1->LoadGeneration();
+			}
+			else
+			{
+				return h2->LoadGeneration();
+			}
+		}
 		
 		uint64_t Resolve()
 		{
@@ -411,7 +419,6 @@ public:
 			}
 		}
 		
-	private:
 		uint16_t valid;
 		uint16_t shiftLen;
 		CuckooHashTableNode* h1;
