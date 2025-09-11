@@ -73,7 +73,7 @@ void* MlpRangeTree::Load(uint64_t key) {
     while (true) {
         uint32_t generation = cur_generation.load();
         NodeResult result = QueryLCPWithNode(key, generation);
-
+        
         if (!result.generationValid) {
             continue;
         }
@@ -107,6 +107,9 @@ void* MlpRangeTree::Load(uint64_t key) {
                 }
             }
         if (result.node->LoadGeneration() > generation) {
+            continue;
+        }
+        if (generation > cur_generation.load()) {
             continue;
         }
         return ret_val;
@@ -439,6 +442,9 @@ bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& range
         }
         
         if (result.node->LoadGeneration() > generation) {
+            continue;
+        }
+        if (generation > cur_generation.load()) {
             continue;
         }
         return ret_val;

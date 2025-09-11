@@ -1071,6 +1071,10 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
 		uint32_t generation = cur_generation.load();
 		// LockGuard lock(&displacement_mutex, true);
 		int ret = QueryLCPInternal(key, idxLen, allPositions1, allPositions2, expectedHash, generation);
+		if (generation > cur_generation.load()) {
+			// this implies that the generation was reset, so we need to retry.
+			continue;
+		}
 		if (ret >= 0)
 		{
 			return ret;
@@ -2150,6 +2154,10 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 	do {
 		uint32_t generation = cur_generation.load();
 		Promise p = LowerBoundInternal(value, found, generation);
+		if (generation > cur_generation.load()) {
+			// this implies that the generation was reset, so we need to retry.
+			continue;
+		}
 		if (!found) {
 			return 0xffffffffffffffffULL;
 		}
