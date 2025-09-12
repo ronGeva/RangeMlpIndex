@@ -4,6 +4,8 @@
 #include <iostream>
 #include <iomanip>
 #include <thread>
+#include <bitset>
+
 
 namespace MlpSetUInt64
 {
@@ -121,13 +123,7 @@ void XXHExecuteAvalanche(__m128i& data)
 	data = _mm_xor_si128(data, tmp);
 }
 
-// high to low:
-// out1: h1(8), h1(7), h1(6), h1(5)
-// out2: h2(8), h2(7), h2(6), h2(5)
-// out3: h3(8), h3(7), h3(6), h3(5)
-// out4: h1(4), h1(3), h2(4), h2(3)
-// out5: h3(4), h3(3)
-//
+
 void XXHashArray(uint64_t key, __m128i& out1, __m128i& out2, __m128i& out3, __m128i& out4, uint64_t& out5)
 {
 	uint32_t low = key;
@@ -217,12 +213,10 @@ LockGuard::LockGuard(std::shared_mutex *m, bool is_shared) : m(m), _is_shared(is
 	{
 		m->lock();
 	}
-	// DEBUG("LOCKED");
 }
 
 LockGuard::~LockGuard()
 {
-	// DEBUG("UNLOCKING");
 	if (_is_shared)
 	{
 		m->unlock_shared();
@@ -236,8 +230,6 @@ LockGuard::~LockGuard()
 void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash18bit, int firstChild, uint32_t start_gen)
 {
 	generation.store(start_gen);
-	assert(!IsOccupied());
-	assert(1 <= ilen && ilen <= 8 && 1 <= dlen && dlen <= 8 && -1 <= firstChild && firstChild <= 255);
 	hash = 0x80000000U | ((ilen - 1) << 27) | ((dlen - 1) << 24) | hash18bit;
 	minKey = dkey;
 	childMap.store(firstChild);
@@ -285,8 +277,6 @@ int CuckooHashTableNode::FindNeighboringEmptySlot()
 	
 void CuckooHashTableNode::BitMapSet(int child, bool on/*=true*/)
 {
-	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap());
-	assert(0 <= child && child <= 255);
 	uint64_t* ptr;
 
 	if (unlikely(IsExternalPointerBitMap()))
@@ -350,10 +340,8 @@ uint64_t* CuckooHashTableNode::AllocateExternalBitMap()
 	
 void CuckooHashTableNode::ExtendToBitMap(uint32_t generation)
 {
-	assert(IsNode() && !IsLeaf() && IsUsingInternalChildMap() && GetChildNum() == 8);
 	uint64_t children = childMap.load();
 	int offset = FindNeighboringEmptySlot() + 4;
-	assert(1 <= offset && offset <= 7);
 	uint32_t hashVal = hash;
 	hashVal &= 0xff03ffffU;
 	hashVal |= (offset << 21);
@@ -382,7 +370,6 @@ void CuckooHashTableNode::ExtendToBitMap(uint32_t generation)
 
 static int Bitmap256LowerBound(uint64_t* ptr, uint32_t child)
 {
-	assert(0 <= child && child <= 255);
 	int idx = child / 64;
 	uint64_t x = ptr[idx] >> (child % 64);
 	if (x) 
@@ -403,7 +390,6 @@ static int Bitmap256LowerBound(uint64_t* ptr, uint32_t child)
 
 static int Bitmap256LowerBound(std::atomic<uint64_t>* ptr, uint32_t child)
 {
-	assert(0 <= child && child <= 255);
 	int idx = child / 64;
 	uint64_t x = ptr[idx].load() >> (child % 64);
 	if (x) 
@@ -425,8 +411,6 @@ static int Bitmap256LowerBound(std::atomic<uint64_t>* ptr, uint32_t child)
 
 int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 {
-	assert(IsNode() && !IsLeaf());
-	assert(0 <= child && child <= 255);
 	if (IsUsingInternalChildMap())
 	{
 		if (child == 0) { return childMap.load() & 255; }
@@ -439,7 +423,6 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 		msk &= (1<<k)-1;
 		msk++;
 		int pos = __builtin_ffs(msk);
-		assert(1 <= pos && pos <= k + 1);
 		if (pos == k+1) 
 		{ 
 			return -1; 
@@ -519,8 +502,6 @@ int CuckooHashTableNode::LowerBoundChild(uint32_t child)
 	
 bool CuckooHashTableNode::ExistChild(int child)
 {
-	assert(IsNode() && !IsLeaf());
-	assert(0 <= child && child <= 255);
 	if (IsUsingInternalChildMap())
 	{
 		int k = GetChildNum();
@@ -540,11 +521,10 @@ bool CuckooHashTableNode::ExistChild(int child)
 			c >>= 8;
 			if (x == child) { bruteForceResult = true; break; }
 		}
-		assert(result == bruteForceResult);
 #endif
 		return result;
 	}
-	else if (unlikely(IsExternalPointerBitMap()))
+	else if (unlikely(IsExternalPointerBitMap() && !IsLeaf())) //ASK RON TODO
 	{
 		uint64_t* ptr = reinterpret_cast<uint64_t*>(childMap.load());
 		return (ptr[child / 64] & (uint64_t(1) << (child % 64))) != 0;
@@ -570,9 +550,6 @@ bool CuckooHashTableNode::ExistChild(int child)
 
 void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 {
-	assert(IsNode() && !IsLeaf());
-	assert(0 <= child && child <= 255);
-	assert(!ExistChild(child));
 	uint8_t k = GetChildNum();
 	if (IsUsingInternalChildMap())
 	{
@@ -587,7 +564,6 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 			msk &= (1<<k)-1;
 			msk++;
 			int pos = __builtin_ffs(msk);
-			assert(1 <= pos && pos <= k + 1);
 			uint64_t larger = (pos == 8) ? 0 : (childMap.load() >> ((pos-1)*8) << (pos*8));
 			uint64_t smaller = childMap.load() & ((uint64_t(1) << ((pos-1)*8)) - 1);
 			childMap.store(smaller | (uint64_t(child) << ((pos - 1)*8)) | larger);
@@ -598,7 +574,6 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 			{
 				tmp /= 256;
 				int cur = tmp % 256;
-				assert(cur > last);
 				last = cur;
 			}
 #endif
@@ -612,7 +587,6 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 
 void CuckooHashTableNode::RevertToInternalBitmap(std::function<void(void*)> addDeallocationFunc)
 {
-	assert(!IsUsingInternalChildMap());
 
 	uint64_t tmpChildMap = 0;
 
@@ -673,10 +647,6 @@ _leave:
 
 bool CuckooHashTableNode::RemoveChild(int child, std::function<void(void*)> addDeallocationFunc)
 {
-	assert(IsNode() && !IsLeaf());
-	assert(0 <= child && child <= 255);
-	assert(ExistChild(child));
-
 	int amountOfChildren = GetChildNum();
 	if (IsUsingInternalChildMap())
 	{
@@ -689,7 +659,6 @@ bool CuckooHashTableNode::RemoveChild(int child, std::function<void(void*)> addD
 		msk &= (1<<amountOfChildren)-1;
 		msk++;
 		int pos = __builtin_ffs(msk);
-		assert(2 <= pos && pos <= amountOfChildren + 1);
 		uint64_t larger = (pos == 9) ? 0 : (childMap.load() >> ((pos-1)*8) << ((pos-2)*8));
 		uint64_t smaller;
 		if (pos == 2)
@@ -722,7 +691,6 @@ _Leave:
 
 vector<int> CuckooHashTableNode::GetAllChildren()
 {
-	assert(IsNode());
 	if (IsLeaf())
 	{
 		return vector<int>();
@@ -740,7 +708,6 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 		}
 		rep(i, 1, k-1)
 		{
-			assert(ret[i] > ret[i-1]);
 		}
 	}
 	else if (unlikely(IsExternalPointerBitMap()))
@@ -792,7 +759,6 @@ vector<int> CuckooHashTableNode::GetAllChildren()
 	
 uint64_t* CuckooHashTableNode::CopyToExternalBitMap()
 {
-	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap() && !IsExternalPointerBitMap());
 	uint64_t* ptr = AllocateExternalBitMap();
 	CuckooHashTableNode* node_ptr = reinterpret_cast<CuckooHashTableNode*>(&ptr[1]);
 	
@@ -811,7 +777,8 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
     target->SetGeneration(generation);
 	this->SetGeneration(generation);
     target->CopyWithoutGeneration(*this);
-	if (IsUsingInternalChildMap() || IsExternalPointerBitMap())
+	if (IsUsingInternalChildMap() || (IsExternalPointerBitMap() || IsLeaf())) //ASK RON TODO
+	//if (IsUsingInternalChildMap() || (IsExternalPointerBitMap()))
 	{
 		// Only clear the occupied flag to mark this node as free
 		// Don't zero other fields that readers might still be accessing
@@ -828,8 +795,8 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 	{
 		// Safely copy atomic fields using proper atomic operations instead of memcpy
 		target[targetOffset-4].generation.store((this[offset-4].generation.load()));
-		target[targetOffset-4].hash = this[offset-4].hash;
-		target[targetOffset-4].minKey = this[offset-4].minKey;
+		target[targetOffset-4].hash.store(this[offset-4].hash.load());
+		target[targetOffset-4].minKey.store(this[offset-4].minKey.load());
 		target[targetOffset-4].childMap.store(this[offset-4].childMap.load());
 	}
 	else
@@ -839,25 +806,20 @@ void CuckooHashTableNode::MoveNode(CuckooHashTableNode* target, uint32_t generat
 	}
 
 	hash = 0;
-	this[offset-4].hash = 0;
+	this[offset-4].hash.store(0);
 #ifndef NDEBUG
-	assert(target->IsNode());
 	if (!target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
 	{
 		int o = (target->hash >> 21) & 7;
-		assert(target[o-4].IsOccupied() && !target[o-4].IsNode());
 	}
 #endif
 }
 	
 void CuckooHashTableNode::RelocateBitMap()
 {
-	assert(IsNode() && !IsLeaf() && !IsUsingInternalChildMap() && !IsExternalPointerBitMap());
 	uint64_t children = childMap.load();
 	int offset = FindNeighboringEmptySlot() + 4;
-	assert(1 <= offset && offset <= 7);
 	int oldOffset = (hash >> 21) & 7;
-	assert(offset != oldOffset);
 	if (offset == 4)
 	{
 		uint64_t* ptr = CopyToExternalBitMap();
@@ -869,9 +831,8 @@ void CuckooHashTableNode::RelocateBitMap()
 	}
 
 	memset(&(this[oldOffset-4]), 0, sizeof(CuckooHashTableNode));
-	hash &= 0xfff1fffffU;
+	hash &= 0xff1fffffU;
 	hash |= offset << 21;
-	assert(offset == 4 || (this[offset-4].IsOccupied() && !this[offset-4].IsNode()));
 }	
 
 static const __m128i HASH18_MASK = _mm_set_epi32(0x3ffffU, 0x3ffffU, 0x3ffffU, 0x3ffffU);
@@ -988,9 +949,6 @@ uint32_t CuckooHashTable::ReservePositionForInsert(int ilen, uint64_t dkey, uint
 	}
 	uint32_t victimPosition = rand()%2 ? h1 : h2;
 	{
-		// DEBUG("Locking");
-		// LockGuard lock(&displacement_mutex, false);
-		// DEBUG("locked");
 		HashTableCuckooDisplacement(victimPosition, 1, failed, generation);
 	}
 	if (failed)
@@ -1009,11 +967,12 @@ uint32_t CuckooHashTable::Insert(int ilen, int dlen, uint64_t dkey, int firstChi
 	hash18bit = hash18bit & ((1<<18) - 1);
 	
 	uint32_t pos = ReservePositionForInsert(ilen, dkey, hash18bit, exist, failed, generation);
-	// DEBUG("pos=" << pos << " exist=" << exist << " failed=" << failed);
 	if (!exist && !failed)
 	{
 		ht[pos].Init(ilen, dlen, dkey, hash18bit, firstChild, generation);
+		
 	}
+	
 	return pos;
 }
 
@@ -1106,7 +1065,8 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
                                             uint32_t* allPositions1, 
                                             uint32_t* allPositions2, 
                                             uint32_t* expectedHash,
-											std::function<ReaderGenerationGuard(void)> generation_getter)
+											std::function<ReaderGenerationGuard(void)> generation_getter,
+											std::atomic<uint32_t>& cur_generation)
 {
 	while (true)
 	{
@@ -1114,6 +1074,10 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
 		uint32_t generation = generation_guard.generation();
 		// LockGuard lock(&displacement_mutex, true);
 		int ret = QueryLCPInternal(key, idxLen, allPositions1, allPositions2, expectedHash, generation);
+		if (generation > cur_generation.load()) {
+			// this implies that the generation was reset, so we need to retry.
+			continue;
+		}
 		if (ret >= 0)
 		{
 			return ret;
@@ -1130,6 +1094,7 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 {
 	assert(m_hasCalledInit);
 	
+
 	__m128i h1, h2, h3, h4;
 	uint64_t h5;
 	XXH::XXHashArray(key, h1, h2, h3, h4, h5);
@@ -1199,13 +1164,6 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 #ifdef ENABLE_STATS
 		stats.m_lcpResultHistogram[2]++;
 #endif
-        DEBUG("!!!");
-		len = 7;
-		for (; len >= 2; len --)
-		{		
-			DEBUG("generation1=" << ht[allPositions1[len]].LoadGeneration() << " pos=" << allPositions1[len]);
-			DEBUG("generation2=" << ht[allPositions2[len]].LoadGeneration() << " pos=" << allPositions2[len]);
-		}
 		return 2;
 	}
 
@@ -1327,7 +1285,8 @@ void CuckooHashTable::HashTableCuckooDisplacement(uint32_t victimPosition, int r
 		rep(i, -3, 3)
 		{
 			CuckooHashTableNode* target = &ht[victimPosition + i];
-			if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
+			//if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap())
+			if (target->IsOccupiedAndNode() && !target->IsUsingInternalChildMap() && !target->IsExternalPointerBitMap() && !target->IsLeaf()) //ASK RON TODO
 			{
 				int offset = ((target->hash >> 21) & 7) - 4;
 				if (offset + i == 0)
@@ -1512,7 +1471,7 @@ void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 48) << 48, found);
+	uint64_t smallest_in_range = WriterLowerBound((value >> 48) << 48, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
@@ -1535,7 +1494,7 @@ void MlpSet::ClearL2Cache(uint64_t value, std::optional<uint64_t> successor)
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 40) << 40, found);
+	uint64_t smallest_in_range = WriterLowerBound((value >> 40) << 40, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
@@ -1558,7 +1517,7 @@ void MlpSet::ClearRootCache(uint64_t value, std::optional<uint64_t> successor)
 	}
 
 	bool found;
-	uint64_t smallest_in_range = LowerBound((value >> 56) << 56, found);
+	uint64_t smallest_in_range = WriterLowerBound((value >> 56) << 56, found);
 	if (found && smallest_in_range < value)
 	{
 		// there's an item in the data structure smaller than value but bigger
@@ -1575,7 +1534,7 @@ void MlpSet::ClearRootCache(uint64_t value, std::optional<uint64_t> successor)
 std::optional<uint64_t> MlpSet::ClearLowLevelCaches(uint64_t value)
 {
 	bool found_successor = false;
-	uint64_t successor = LowerBound(value + 1, found_successor);
+	uint64_t successor = WriterLowerBound(value + 1, found_successor);
 	std::optional<uint64_t> opt_successor;
 
 	if (found_successor)
@@ -1669,7 +1628,7 @@ void MlpSet::DeallocatePending()
 	m_awaitingDeallocations.erase(m_awaitingDeallocations.begin(), m_awaitingDeallocations.begin() + i);
 }
 
-bool MlpSet::Remove(uint64_t value)
+bool MlpSet::Remove(uint64_t value, uint32_t generation)
 {
 	uint32_t ilen;
 	uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
@@ -1691,7 +1650,11 @@ bool MlpSet::Remove(uint64_t value)
 		return false;
 	}
 
-	uint32_t cur_gen = IncrementGeneration();
+	uint32_t cur_gen = generation;
+	bool should_take_generation = generation == UINT32_MAX;
+	if (should_take_generation) {
+		cur_gen = IncrementGeneration();
+	}	
 
 	std::optional<uint64_t> opt_successor = ClearLowLevelCaches(value);
 
@@ -1741,20 +1704,23 @@ bool MlpSet::Remove(uint64_t value)
 		}
 	}
 
-	cur_generation.store(cur_gen);
+	if (should_take_generation) {
+		cur_generation.store(cur_gen);
+	}
 
 	DeallocatePending();
 
 	return true;
 }
 
-bool MlpSet::Insert(uint64_t value)
+bool MlpSet::Insert(uint64_t value, uint32_t generation)
 {
 	assert(m_hasCalledInit);
-
-	uint32_t cur_gen = IncrementGeneration();
-	
-	DEBUG("insert=" << value << " cur_gen=" << cur_gen);
+	bool should_take_generation = generation == UINT32_MAX;
+	uint32_t cur_gen = generation;
+	if (should_take_generation) {
+		cur_gen = IncrementGeneration();
+	}	
 	int lcpLen;
 	// Handle LCP < 2 case first
 	// This is supposed to be a L1 hit (working set 8KB)
@@ -1771,7 +1737,6 @@ bool MlpSet::Insert(uint64_t value)
 			goto _end;
 		}
 	}
-	DEBUG("reached!");
 	
 	// Issue the prefetch in case LCP turns out to be 2
 	//
@@ -1805,11 +1770,11 @@ bool MlpSet::Insert(uint64_t value)
 			// Split as needed
 			// Determine whether the path-compression string completely matched
 			//
+			m_hashTable.ht[pos].SetGeneration(cur_gen);
 			if (lcpLen == m_hashTable.ht[pos].GetFullKeyLen())
 			{
 				// path-compression string matched, no need to split
 				//
-				m_hashTable.ht[pos].SetGeneration(cur_gen);
 				m_hashTable.ht[pos].AddChild((value >> (56 - lcpLen * 8)) % 256, cur_gen);
 				if (value < m_hashTable.ht[pos].minKey)
 				{
@@ -1848,9 +1813,6 @@ bool MlpSet::Insert(uint64_t value)
 					assert(!exist && !failed);
 					assert(!m_hashTable.ht[x].IsOccupied());
 					// should be ok without fencing as we have a lock.
-					// DEBUG("Locking");
-					// LockGuard lock(&displacement_mutex, false);
-					// DEBUG("locked");
 					m_hashTable.ht[x].SetGeneration(cur_gen);
 					m_hashTable.ht[pos].MoveNode(&(m_hashTable.ht[x]), cur_gen);
 					m_hashTable.ht[x].AlterIndexKeyLen(lcpLen + 1);
@@ -1977,7 +1939,7 @@ _end:
 						   cur_gen /*generation*/);
 		assert(!exist && !failed);
 	}
-	
+
 	// Finally, if lcp == 2, we need to set the corresponding m_treeDepth2 bit
 	//
 	if (lcpLen == 2)
@@ -1987,7 +1949,11 @@ _end:
 		m_treeDepth2[(value >> 40) / 64].fetch_or(depth2Bit);
 	}
 
-	cur_generation.store(cur_gen);
+	std::atomic_thread_fence(std::memory_order_release);
+
+	if (should_take_generation) {
+		cur_generation.store(cur_gen);
+	}
 	
 	return true;
 }
@@ -2005,11 +1971,24 @@ bool MlpSet::Exist(uint64_t value)
 		                              allPositions1 /*out*/, 
 		                              allPositions2 /*out*/, 
 		                              expectedHash /*out*/,
-									  [this]() {return ReaderGeneration();} /*generation*/);
+									  [this]() {return ReaderGeneration();} /*generation*/,
+									  cur_generation /*cur_generation*/);
 	if (lcpLen != 8) {
 		DEBUG("lcpLen=" << lcpLen << " value=" << value);
 	}
 	return (lcpLen == 8);
+}
+
+#define BT_BUF_SIZE 100
+
+#include <execinfo.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+void CuckooHashTableNode::SetGeneration(uint32_t new_generation)
+{
+	generation.store((generation.load() & 0xff000000) | (new_generation & 0xffffff));
 }
 
 MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t generation)
@@ -2033,6 +2012,7 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 	uint32_t allPositions[2][8];
 	uint64_t _expectedHash[4];
 	uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
+
 	int lcpLen = m_hashTable.QueryLCPInternal(value,
 		                              		  ilen /*out*/,
 		                              		  allPositions[0] /*out*/,
@@ -2074,15 +2054,19 @@ MlpSet::Promise MlpSet::LowerBoundInternal(uint64_t value, bool& found, uint32_t
 			}
 			uint32_t child = (value >> (56 - dlen * 8)) & 255;
 			int lbChild = m_hashTable.ht[pos].LowerBoundChild(child);
+			// std::atomic_thread_fence(std::memory_order_acquire);
 			if (generation < m_hashTable.ht[pos].LoadGeneration())
 			{
 				return CuckooHashTable::LookupMustExistPromise();
 			}
-			if (lbChild == -1) 
+
+			if (lbChild == -1)
 			{
 				goto _parent;
 			}
-			assert(lbChild != child);
+			if (lbChild == child) {
+				return CuckooHashTable::LookupMustExistPromise();
+			}
 			// return the minimum value in lbChild subtree
 			//
 			uint64_t keyToFind = value & (~(255ULL << (56 - dlen * 8)));
@@ -2129,20 +2113,14 @@ _parent:
 			{
 				uint32_t pos = allPositions[k][ilen - 1];
 				// Check generation before accessing node methods
-				if (generation < m_hashTable.ht[pos].LoadGeneration())
-				{
-					return CuckooHashTable::LookupMustExistPromise();
-				}
 				if (m_hashTable.ht[pos].IsEqualNoHash(value, ilen))
 				{
-					assert(m_hashTable.ht[pos].GetIndexKeyLen() == ilen);
 					int dlen = m_hashTable.ht[pos].GetFullKeyLen();
 					// Check generation again after method calls to ensure results are valid
 					if (generation < m_hashTable.ht[pos].LoadGeneration())
 					{
 						return CuckooHashTable::LookupMustExistPromise();
 					}
-					assert((m_hashTable.ht[pos].minKey >> (64 - dlen * 8)) == (value >> (64 - dlen * 8)));
 					uint32_t child = (value >> (56 - dlen * 8)) & 255;
 					if (child < 255)
 					{
@@ -2231,6 +2209,14 @@ _flat_mapping:
 	return CuckooHashTable::LookupMustExistPromise();
 }
 
+uint64_t MlpSet::WriterLowerBound(uint64_t value, bool &found) {
+	MlpSet::Promise prom = LowerBoundInternal(value, found, UINT32_MAX);
+	if (found) {
+		return prom.Resolve();
+	}
+	return UINT64_MAX;
+}
+
 // This version wasn't safe beforehand as well, so it doesn't need to change.
 MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 {
@@ -2245,12 +2231,15 @@ MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 
 uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 {
-	// DEBUG("LowerBound start");
 	do {
 		// LockGuard lock(&displacement_mutex, true);
 		ReaderGenerationGuard generation_guard = ReaderGeneration();
 		uint32_t generation = generation_guard.generation();
 		Promise p = LowerBoundInternal(value, found, generation);
+		if (generation > cur_generation.load()) {
+			// this implies that the generation was reset, so we need to retry.
+			continue;
+		}
 		if (!found) {
 			return 0xffffffffffffffffULL;
 		}
@@ -2263,7 +2252,6 @@ uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 			    std::cout << "LowerBound failed: generation mismatch" << std::endl;
 			}
 		}
-		// DEBUG("LowerBound failed");
 	} while (true);
 }
 

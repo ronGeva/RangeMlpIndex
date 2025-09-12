@@ -63,7 +63,7 @@ struct CuckooHashTableNode
 	// 3 bit: # of childs if using internal map, 0 + bitmap's highest 2 bits if using external bitmap
 	// 18 bit: hash 
 	//
-	uint32_t hash;	
+	std::atomic<uint32_t> hash;
 	// points to min node in this subtree - UNUSED in the original implementation
 	// generation first byte is used for num of children, second byte for generation.
 	std::atomic<uint32_t> generation;
@@ -72,7 +72,7 @@ struct CuckooHashTableNode
 	// the first fullKeyLen bytes prefix is this node's index plus path compression part
 	// the whole minKey is the min node's key
 	//
-	uint64_t minKey;
+	std::atomic<uint64_t> minKey;
 	// the child map
 	// when using internal map, each byte stores a child
 	// when using external bitmap, each bit represent whether the corresponding child exists
@@ -83,8 +83,8 @@ struct CuckooHashTableNode
 
 	// Copy fields from another node in a way that works with std::atomic
 	void CopyWithoutGeneration(const CuckooHashTableNode& other) {
-		hash = other.hash;
-		minKey = other.minKey;
+		hash.store(other.hash.load());
+		minKey.store(other.minKey.load());
 		childMap.store(other.childMap.load());
 		SetChildNum(other.GetChildNum());
 	}
@@ -92,16 +92,13 @@ struct CuckooHashTableNode
 	
 	void Clear()
 	{
-		hash = 0;
+		hash.store(0);
 	    SET_NUM_CHILDREN(generation,0);
-		minKey = 0;
+		minKey.store(0);
 		childMap.store(0);
 	}
 
-	void SetGeneration(uint32_t new_generation)
-	{
-		generation.store((generation.load() & 0xff000000) | (new_generation & 0xffffff));
-	}
+	void SetGeneration(uint32_t new_generation);
 
 	uint32_t LoadGeneration()
 	{
@@ -275,6 +272,49 @@ struct CuckooHashTableNode
 	// Relocate its internal bitmap to another position
 	//
 	void RelocateBitMap();
+
+	 // For leaf nodes only: manage the node type using bitmap bits
+    enum LeafType : uint8_t {
+        LEAF_SINGLE = 0,      // 000
+        LEAF_RANGE_START = 1, // 001
+        LEAF_RANGE_END = 2,   // 010
+    };
+    
+    // Set the leaf type (only valid for leaves with fullKeyLen == 8)
+    void SetLeafType(LeafType type) {
+        assert(GetFullKeyLen() == 8);  // Must be a leaf
+        
+        // Modify hash in place - clear bits 21-23 and set new value
+        hash = (hash & ~(0x7U << 21)) | (static_cast<uint32_t>(type) << 21);
+    }
+    
+    // Get the leaf type (only valid for leaves)
+    LeafType GetLeafType()  {
+        assert(GetFullKeyLen() == 8);  // Must be a leaf
+        return static_cast<LeafType>((hash >> 21) & 0x7);
+    }
+    
+    // For RANGE_START and SINGLE leaves: store/retrieve data pointer
+    void SetLeafData(void* data) {
+        assert(GetFullKeyLen() == 8);
+        childMap.store(reinterpret_cast<uint64_t>(data));
+    }
+    
+    void* GetLeafData()  {
+        assert(GetFullKeyLen() == 8);
+        return reinterpret_cast<void*>(childMap.load());
+    }
+    
+    // For RANGE_END leaves: store/retrieve the range start key
+    void SetRangeStart(uint64_t startKey) {
+        assert(GetFullKeyLen() == 8 && GetLeafType() == LEAF_RANGE_END);
+        childMap.store(startKey);
+    }
+
+    uint64_t GetRangeStart()  {
+        assert(GetFullKeyLen() == 8 && GetLeafType() == LEAF_RANGE_END);
+        return childMap.load();
+    }
 };
 
 static_assert(sizeof(CuckooHashTableNode) == 24, "size of node should be 24");
@@ -353,6 +393,17 @@ public:
 				return h2->LoadGeneration() <= generation;
 			}
 		}
+
+		uint32_t GetGeneration() {
+			if (h2 == nullptr || h1->IsEqual(expectedHash, shiftLen, shiftedKey))
+			{
+				return h1->LoadGeneration();
+			}
+			else
+			{
+				return h2->LoadGeneration();
+			}
+		}
 		
 		uint64_t Resolve()
 		{
@@ -379,7 +430,6 @@ public:
 			}
 		}
 		
-	private:
 		uint16_t valid;
 		uint16_t shiftLen;
 		CuckooHashTableNode* h1;
@@ -436,7 +486,8 @@ public:
                  uint32_t* allPositions1, 
                  uint32_t* allPositions2, 
                  uint32_t* expectedHash,
-				 std::function<ReaderGenerationGuard(void)> generation_getter);
+				 std::function<ReaderGenerationGuard(void)> generation_getter,
+				 std::atomic<uint32_t>& cur_generation);
 	
 	void ResetGenerations();
 
@@ -496,10 +547,10 @@ std::atomic<uint32_t> cur_generation;
 	
 	// Insert an element, returns true if the insertion took place, false if the element already exists
 	//
-	bool Insert(uint64_t value);
+	bool Insert(uint64_t value, uint32_t generation = UINT32_MAX);
 
 	// Removes an element, returns true if the removal took place, false if the element doesn't exists
-	bool Remove(uint64_t value);
+	bool Remove(uint64_t value, uint32_t generation = UINT32_MAX);
 	
 	// Returns whether the specified value exists in the set
 	//
@@ -516,6 +567,8 @@ std::atomic<uint32_t> cur_generation;
 	//
 	MlpSet::Promise LowerBound(uint64_t value);
 
+	uint64_t WriterLowerBound(uint64_t value, bool& found);
+
 	void ResetGenerationsIfNeeded(uint32_t &generation);
 	
 	// For debug purposes only
@@ -530,7 +583,7 @@ std::atomic<uint32_t> cur_generation;
 	void ReportStats();
 #endif
 
-private:
+protected:
 	static constexpr size_t PENDING_ALLOCATIONS_CLEAR_BUFFER = 10;
 
 	static constexpr size_t CACHE_LINE_SIZE = 64;
@@ -598,6 +651,14 @@ private:
 	bool m_hasCalledInit;
 #endif
 };
+
+
+
+
+
+
+
+
 
 }	// namespace MlpSetUInt64
  
