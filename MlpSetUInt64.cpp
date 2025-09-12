@@ -123,13 +123,7 @@ void XXHExecuteAvalanche(__m128i& data)
 	data = _mm_xor_si128(data, tmp);
 }
 
-// high to low:
-// out1: h1(8), h1(7), h1(6), h1(5)
-// out2: h2(8), h2(7), h2(6), h2(5)
-// out3: h3(8), h3(7), h3(6), h3(5)
-// out4: h1(4), h1(3), h2(4), h2(3)
-// out5: h3(4), h3(3)
-//
+
 void XXHashArray(uint64_t key, __m128i& out1, __m128i& out2, __m128i& out3, __m128i& out4, uint64_t& out5)
 {
 	uint32_t low = key;
@@ -1091,14 +1085,6 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 {
 	assert(m_hasCalledInit);
 	
-	
-
-	// high to low:
-	// out1: h1(8), h1(7), h1(6), h1(5)
-	// out2: h2(8), h2(7), h2(6), h2(5)
-	// out3: h3(8), h3(7), h3(6), h3(5)
-	// out4: h1(4), h1(3), h2(4), h2(3)
-	// out5: h3(4), h3(3)
 
 	__m128i h1, h2, h3, h4;
 	uint64_t h5;

@@ -130,33 +130,35 @@ bool MlpRangeTree::InsertSinglePoint(uint64_t key, void* value) { //
     // Insert as single point
     bool inserted = MlpSet::Insert(key, generation);
     
-    if (inserted) {
-        // Find the node we just inserted
-        uint32_t ilen;
-        uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
-        uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
-        uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
-        uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
-        
-        int lcpLen = m_hashTable.QueryLCPInternal(key, ilen, 
-                                          allPositions1, allPositions2, 
-                                          expectedHash, UINT32_MAX);
-        
-        if (lcpLen == 8) {
-            uint32_t pos = allPositions1[ilen-1];
-            CuckooHashTableNode* node = &m_hashTable.ht[pos];
-            node->SetGeneration(generation);
-            if (!node->IsEqualNoHash(key, ilen)) {
-                pos = allPositions2[ilen-1];
-                node = &m_hashTable.ht[pos];
-            }
-
-            // Use the efficient in-place methods
-            node->SetLeafType(CuckooHashTableNode::LEAF_SINGLE);
-            node->SetLeafData(value);
-        }
-        cur_generation.store(generation);
+    if (!inserted) {
+        return false
     }
+
+    // Find the node we just inserted
+    uint32_t ilen;
+    uint64_t _allPositions1[4], _allPositions2[4], _expectedHash[4];
+    uint32_t* allPositions1 = reinterpret_cast<uint32_t*>(_allPositions1);
+    uint32_t* allPositions2 = reinterpret_cast<uint32_t*>(_allPositions2);
+    uint32_t* expectedHash = reinterpret_cast<uint32_t*>(_expectedHash);
+    
+    int lcpLen = m_hashTable.QueryLCPInternal(key, ilen, 
+                                        allPositions1, allPositions2, 
+                                        expectedHash, UINT32_MAX);
+    
+    if (lcpLen == 8) {
+        uint32_t pos = allPositions1[ilen-1];
+        CuckooHashTableNode* node = &m_hashTable.ht[pos];
+        node->SetGeneration(generation);
+        if (!node->IsEqualNoHash(key, ilen)) {
+            pos = allPositions2[ilen-1];
+            node = &m_hashTable.ht[pos];
+        }
+
+        // Use the efficient in-place methods
+        node->SetLeafType(CuckooHashTableNode::LEAF_SINGLE);
+        node->SetLeafData(value);
+    }
+    cur_generation.store(generation);    
 
     return inserted;
 }
@@ -375,11 +377,6 @@ bool MlpRangeTree::Erase(uint64_t key) { //
     return ret_val;
 }
 
-// bool MlpRangeTree::EraseRange(uint64_t start, uint64_t end) { //
-//     if (start > end) return false;
-//     ClearRange(start, end);
-//     return true;
-// }
 
 bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& rangeEnd, void*& value) {
     while (true) {
