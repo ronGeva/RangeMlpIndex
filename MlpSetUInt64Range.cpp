@@ -25,10 +25,10 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key, uint32_t g
     // First find using LowerBound
     bool found;
     Promise lowerBoundPromise = MlpSet::LowerBoundInternal(key, found, generation);
-    if (!found || !lowerBoundPromise.IsValid()) {
+    if (!found) {
         return result;
     }
-    if (!lowerBoundPromise.IsGenerationValid(generation)) {
+    if (!lowerBoundPromise.IsValid() || !lowerBoundPromise.IsGenerationValid(generation)) {
         result.found = false;
         result.generationValid = false;
         return result;

@@ -8,6 +8,7 @@
 #include <cassert>
 #include <set>
 #include <mutex>
+#include <iomanip> // For fixed and setprecision
 
 using namespace MlpSetUInt64;
 using namespace std;
@@ -478,6 +479,428 @@ void test_single_writer_multiple_readers_regular_mlpset_lowerbound() {
     
     cout << "Regular MlpSet LowerBound test completed successfully!" << endl;
 }
+
+// Test 8: Large-scale stress test with 2^24 samples followed by mixed operations
+void test_large_scale_stress() {
+    cout << "\n=== Test 8: Large-scale Stress Test (2^24 samples + mixed ops) ===" << endl;
+    
+    MlpRangeTree tree;
+    const uint64_t totalSamples = 1ULL << 24; // 16M samples
+    tree.Init(totalSamples * 2); // Extra space for safety
+    
+    atomic<uint64_t> insertedCount(0);
+    atomic<bool> insertionsDone(false);
+    atomic<bool> mixedOpsDone(false);
+    atomic<bool> stopReaders(false);
+    
+    // Track inserted keys as (start, end) tuples - single points have end = start
+    vector<pair<uint64_t, uint64_t>> insertedRanges;
+    insertedRanges.reserve(totalSamples);
+    
+    // Use bucket-based locking to reduce contention
+    const int NUM_BUCKETS = 128;  // Power of 2 for efficient modulo
+    vector<mutex> rangesMutexes(NUM_BUCKETS);
+    atomic<size_t> rangesCount(0);  // Track size atomically
+    
+    // Helper function to get bucket index based on hash
+    auto getBucketIndexForAccess = [](size_t index) -> int {
+        return index % NUM_BUCKETS;
+    };
+    
+    // Helper function to get bucket index for new insertions (round-robin)
+    auto getBucketIndexForInsert = [](size_t index) -> int {
+        return index % NUM_BUCKETS;
+    };
+    
+    // Track removed ranges to avoid false positives
+    set<pair<uint64_t, uint64_t>> removedRanges;
+    mutex removedMutex;
+    
+    const int numReaderThreads = 22;
+    
+    cout << "Starting large-scale test with " << totalSamples << " samples..." << endl;
+    auto startTime = high_resolution_clock::now();
+    
+    // Writer thread - Phase 1: inserts 16M samples, Phase 2: mixed operations
+    thread writer([&]() {
+        mt19937_64 rng(42); // Fixed seed for reproducibility
+        uniform_int_distribution<uint64_t> keyDist(0, UINT64_MAX / 2);
+        uniform_int_distribution<int> typeDist(0, 99);
+        
+        auto writerStart = high_resolution_clock::now();
+        uint64_t batchSize = 1000000;
+        
+        // ===== PHASE 1: BULK INSERTIONS =====
+        cout << "\n--- Phase 1: Bulk insertions ---" << endl;
+        
+        for (uint64_t i = 0; i < totalSamples; i++) {
+            uint64_t key = keyDist(rng);
+            int* data = new int(static_cast<int>(i % 1000000)); // Reuse values to save memory
+            
+            bool inserted = false;
+            uint64_t rangeStart = key;
+            uint64_t rangeEnd = key;
+            
+            // 70% single points, 30% ranges
+            if (typeDist(rng) < 70) {
+                // Insert single point
+                inserted = tree.InsertSinglePoint(key, data);
+                rangeEnd = key; // Single point: start == end
+            } else {
+                // Insert range (small ranges to avoid too much overlap)
+                uint64_t rangeSize = 10 + (rng() % 100); // Range size 10-109
+                if (key + rangeSize > key) { // Check for overflow
+                    rangeEnd = key + rangeSize;
+                    inserted = tree.InsertRange(key, rangeEnd, data);
+                } else {
+                    inserted = tree.InsertSinglePoint(key, data);
+                    rangeEnd = key; // Fallback to single point
+                }
+            }
+            
+            // Track successfully inserted ranges
+            if (inserted) {
+                size_t newIndex = insertedRanges.size();
+                int bucketIndex = getBucketIndexForInsert(newIndex);
+                lock_guard<mutex> lock(rangesMutexes[bucketIndex]);
+                insertedRanges.push_back({rangeStart, rangeEnd});
+                rangesCount.fetch_add(1); // Increment size atomically
+            }
+            
+            insertedCount.store(i + 1);
+            
+            // Progress reporting
+            if ((i + 1) % batchSize == 0) {
+                auto now = high_resolution_clock::now();
+                auto elapsed = duration_cast<milliseconds>(now - writerStart).count();
+                double rate = (double)(i + 1) / elapsed * 1000.0;
+                cout << "Inserted " << (i + 1) << " / " << totalSamples 
+                     << " (" << fixed << setprecision(1) 
+                     << (100.0 * (i + 1)) / totalSamples << "%) "
+                     << "Rate: " << fixed << setprecision(0) << rate << " ops/sec" << endl;
+            }
+        }
+        
+        insertionsDone = true;
+        auto phase1End = high_resolution_clock::now();
+        auto phase1Time = duration_cast<milliseconds>(phase1End - writerStart).count();
+        double phase1Rate = (double)totalSamples / phase1Time * 1000.0;
+        
+        cout << "Phase 1 completed: " << totalSamples << " insertions in " 
+             << phase1Time << "ms (avg rate: " << fixed << setprecision(0) 
+             << phase1Rate << " ops/sec)" << endl;
+        cout << "Successfully inserted ranges: " << insertedRanges.size() << endl;
+        cout << "Final tree count after phase 1: " << tree.Count() << endl;
+        
+        // ===== PHASE 2: MIXED OPERATIONS =====
+        cout << "\n--- Phase 2: Mixed operations on large tree ---" << endl;
+        
+        const uint64_t mixedOpsCount = totalSamples / 8; // Do 2M mixed operations
+        uniform_int_distribution<int> opDist(0, 99);
+        uniform_int_distribution<size_t> rangeIndexDist(0, insertedRanges.size() - 1);
+        
+        auto phase2Start = high_resolution_clock::now();
+        uint64_t insertOps = 0, removeOps = 0, loadOps = 0;
+        uint64_t successfulInserts = 0, successfulRemoves = 0, successfulLoads = 0;
+        
+        for (uint64_t i = 0; i < mixedOpsCount; i++) {
+            int op = opDist(rng);
+            
+            if (op < 30 && !insertedRanges.empty()) {
+                // 30% Remove existing range
+                size_t rangeIndex;
+                pair<uint64_t, uint64_t> rangeToRemove;
+                bool validRemoval = false;
+                
+                // First, get a random index without locking
+                size_t currentSize = insertedRanges.size();
+                if (currentSize > 0) {
+                    uniform_int_distribution<size_t> tempIndexDist(0, currentSize - 1);
+                    rangeIndex = tempIndexDist(rng);
+                    int bucketIndex = getBucketIndexForAccess(rangeIndex);
+                    
+                    // Lock only the specific bucket
+                    lock_guard<mutex> lock(rangesMutexes[bucketIndex]);
+                    if (rangeIndex < insertedRanges.size()) {
+                        rangeToRemove = insertedRanges[rangeIndex];
+                        // Remove from tracking list using swap-and-pop for efficiency
+                        if (rangeIndex < insertedRanges.size() - 1) {
+                            insertedRanges[rangeIndex] = insertedRanges.back();
+                        }
+                        insertedRanges.pop_back();
+                        validRemoval = true;
+                    }
+                }
+                
+                if (validRemoval) {
+                    // For ranges, erase the start point; for single points, erase the point
+                    bool removed = tree.Erase(rangeToRemove.first);
+                    removeOps++;
+                    if (removed) {
+                        successfulRemoves++;
+                        // Track successful removal
+                        lock_guard<mutex> lock(removedMutex);
+                        removedRanges.insert(rangeToRemove);
+                    }
+                }
+                
+            } else if (op < 60) {
+                // 30% Insert new key/range
+                uint64_t newKey = keyDist(rng);
+                int* data = new int(static_cast<int>((totalSamples + i) % 1000000));
+                
+                bool inserted = false;
+                uint64_t rangeStart = newKey;
+                uint64_t rangeEnd = newKey;
+                
+                if (typeDist(rng) < 70) {
+                    inserted = tree.InsertSinglePoint(newKey, data);
+                    rangeEnd = newKey; // Single point
+                } else {
+                    uint64_t rangeSize = 10 + (rng() % 100);
+                    if (newKey + rangeSize > newKey) {
+                        rangeEnd = newKey + rangeSize;
+                        inserted = tree.InsertRange(newKey, rangeEnd, data);
+                    } else {
+                        inserted = tree.InsertSinglePoint(newKey, data);
+                        rangeEnd = newKey; // Fallback to single point
+                    }
+                }
+                
+                insertOps++;
+                if (inserted) {
+                    successfulInserts++;
+                    size_t newIndex = insertedRanges.size();
+                    int bucketIndex = getBucketIndexForInsert(newIndex);
+                    lock_guard<mutex> lock(rangesMutexes[bucketIndex]);
+                    insertedRanges.push_back({rangeStart, rangeEnd});
+                    rangesCount.fetch_add(1); // Increment size atomically
+                }
+                
+            } else {
+                // 40% Load random key
+                uint64_t queryKey = keyDist(rng);
+                void* result = tree.Load(queryKey);
+                loadOps++;
+                if (result) {
+                    successfulLoads++;
+                    // Sanity check
+                    int value = *(int*)result;
+                    if (value < 0 || value >= 1000000) {
+                        cout << "ERROR: Writer got invalid value " << value 
+                             << " for key " << queryKey << endl;
+                    }
+                }
+            }
+            
+            // Progress reporting for mixed ops
+            if ((i + 1) % (mixedOpsCount / 20) == 0) {
+                auto now = high_resolution_clock::now();
+                auto elapsed = duration_cast<milliseconds>(now - phase2Start).count();
+                double rate = elapsed > 0 ? (double)(i + 1) / elapsed * 1000.0 : 0;
+                cout << "Mixed ops: " << (i + 1) << " / " << mixedOpsCount 
+                     << " (" << fixed << setprecision(1) 
+                     << (100.0 * (i + 1)) / mixedOpsCount << "%) "
+                     << "Rate: " << fixed << setprecision(0) << rate << " ops/sec" << endl;
+            }
+        }
+        
+        mixedOpsDone = true;
+        cout << "Writer: Setting mixedOpsDone = true" << endl;
+        auto phase2End = high_resolution_clock::now();
+        auto phase2Time = duration_cast<milliseconds>(phase2End - phase2Start).count();
+        double phase2Rate = phase2Time > 0 ? (double)mixedOpsCount / phase2Time * 1000.0 : 0;
+        
+        cout << "Phase 2 completed: " << mixedOpsCount << " mixed operations in " 
+             << phase2Time << "ms (avg rate: " << fixed << setprecision(0) 
+             << phase2Rate << " ops/sec)" << endl;
+        cout << "Insert ops: " << insertOps << " (successful: " << successfulInserts << ")" << endl;
+        cout << "Remove ops: " << removeOps << " (successful: " << successfulRemoves << ")" << endl;
+        cout << "Load ops: " << loadOps << " (successful: " << successfulLoads << ")" << endl;
+        cout << "Remaining ranges: " << insertedRanges.size() << endl;
+        cout << "Final tree count: " << tree.Count() << endl;
+    });
+    
+    // Reader threads - continuously read during both phases
+    vector<thread> readers;
+    vector<atomic<uint64_t>> readerStats(numReaderThreads);
+    vector<atomic<uint64_t>> readerFound(numReaderThreads);
+    
+    for (int i = 0; i < numReaderThreads; i++) {
+        readerStats[i] = 0;
+        readerFound[i] = 0;
+    }
+    
+    for (int r = 0; r < numReaderThreads; r++) {
+        readers.emplace_back([&, r]() {
+            mt19937_64 rng(r + 1000); // Different seed per reader
+            uniform_int_distribution<uint64_t> randomKeyDist(0, UINT64_MAX / 2);
+            uniform_int_distribution<int> strategyDist(0, 99);
+            uint64_t localOps = 0;
+            uint64_t localFound = 0;
+            
+            auto readerStart = high_resolution_clock::now();
+            
+            while (!stopReaders) {
+                uint64_t key;
+                bool shouldExist = false;
+                pair<uint64_t, uint64_t> expectedRange;
+                // Strategy for choosing keys to query:
+                // 60% from inserted ranges (when available), 40% random
+                
+                if (strategyDist(rng) < 60) {
+                    // Try to get a range from the inserted ranges
+                    size_t currentSize = insertedRanges.size();
+                    if (currentSize > 0) {
+                        uniform_int_distribution<size_t> rangeIndexDist(0, currentSize - 1);
+                        size_t rangeIndex = rangeIndexDist(rng);
+                        int bucketIndex = getBucketIndexForAccess(rangeIndex);
+                        
+                        // Lock only the specific bucket
+                        lock_guard<mutex> lock(rangesMutexes[bucketIndex]);
+                        if (rangeIndex < insertedRanges.size()) {
+                            expectedRange = insertedRanges[rangeIndex];
+                            
+                            // Pick a random key within this range
+                            if (expectedRange.first == expectedRange.second) {
+                                // Single point
+                                key = expectedRange.first;
+                            } else {
+                                // Range: pick random key within [start, end]
+                                uniform_int_distribution<uint64_t> withinRangeDist(expectedRange.first, expectedRange.second);
+                                key = withinRangeDist(rng);
+                            }
+                            shouldExist = true;
+                        }
+                    }
+                }
+                
+                if (!shouldExist) {
+                    // Query random key - these may or may not exist
+                    key = randomKeyDist(rng);
+                }
+                
+                void* result = tree.Load(key);
+                
+                localOps++;
+                if (result) {
+                    localFound++;
+                    
+                    // Sanity check the value
+                    int value = *(int*)result;
+                    if (value < 0 || value >= 1000000) {
+                        cout << "ERROR: Reader " << r << " got invalid value " << value 
+                             << " for key " << key << endl;
+                        exit(1);
+                    }
+                } else if (shouldExist) {
+                    // Key should exist but wasn't found - check if it was removed
+                    bool wasRemoved = false;
+                    {
+                        lock_guard<mutex> lock(removedMutex);
+                        wasRemoved = removedRanges.count(expectedRange) > 0;
+                    }
+                    
+                    if (!wasRemoved) {
+                        cout << "FATAL ERROR: Reader " << r << " could not find key " << key 
+                             << " which should exist in range [" << expectedRange.first 
+                             << ", " << expectedRange.second << "]" << endl;
+                        cout << "This indicates a concurrency bug or data corruption!" << endl;
+                        exit(1);
+                    }
+                    // If it was removed, this is expected behavior
+                }
+                
+                // Update stats periodically to avoid too much atomic overhead
+                if (localOps % 10000 == 0) {
+                    readerStats[r].store(localOps);
+                    readerFound[r].store(localFound);
+                }
+                
+                // Small yield to let other threads work
+                if (localOps % 1000 == 0) {
+                    this_thread::yield();
+                }
+            }
+            
+            // Final update
+            readerStats[r].store(localOps);
+            readerFound[r].store(localFound);
+            
+            auto readerEnd = high_resolution_clock::now();
+            auto readerTime = duration_cast<milliseconds>(readerEnd - readerStart).count();
+            double readerRate = readerTime > 0 ? (double)localOps / readerTime * 1000.0 : 0;
+            
+            cout << "Reader " << r << " completed: " << localOps << " operations, "
+                 << localFound << " found (" << fixed << setprecision(1) 
+                 << (100.0 * localFound) / localOps << "%), "
+                 << "rate: " << fixed << setprecision(0) << readerRate << " ops/sec" << endl;
+        });
+    }
+    
+    // Monitor progress
+    thread monitor([&]() {
+        while (!mixedOpsDone.load()) {  // Use explicit load() for clarity
+            this_thread::sleep_for(seconds(10));
+            
+            uint64_t inserted = insertedCount.load();
+            uint64_t totalReaderOps = 0;
+            uint64_t totalReaderFound = 0;
+            
+            for (int i = 0; i < numReaderThreads; i++) {
+                totalReaderOps += readerStats[i].load();
+                totalReaderFound += readerFound[i].load();
+            }
+            
+            string phase = insertionsDone.load() ? "Phase 2 (mixed ops)" : "Phase 1 (insertions)";
+            cout << "[PROGRESS " << phase << "] Inserted: " << inserted << " / " << totalSamples
+                 << ", Reader ops: " << totalReaderOps 
+                 << " (found: " << totalReaderFound << ")" << endl;
+        }
+        cout << "Monitor thread detected mixedOpsDone = true, exiting..." << endl;
+    });
+    
+    // Wait for writer to complete both phases
+    writer.join();
+    
+    // Let readers continue for a bit after all operations are done
+    cout << "All writer operations complete, letting readers run for 10 more seconds..." << endl;
+    this_thread::sleep_for(seconds(10));
+    
+    // Stop everything
+    stopReaders = true;
+    monitor.join();
+    
+    for (auto& r : readers) {
+        r.join();
+    }
+    
+    auto endTime = high_resolution_clock::now();
+    auto totalTime = duration_cast<milliseconds>(endTime - startTime).count();
+    
+    // Final statistics
+    uint64_t totalReaderOps = 0;
+    uint64_t totalReaderFound = 0;
+    
+    for (int i = 0; i < numReaderThreads; i++) {
+        totalReaderOps += readerStats[i].load();
+        totalReaderFound += readerFound[i].load();
+    }
+    
+    cout << "\n=== FINAL STATISTICS ===" << endl;
+    cout << "Total test time: " << totalTime << "ms" << endl;
+    cout << "Phase 1 insertions: " << insertedCount.load() << endl;
+    cout << "Phase 2 mixed operations: " << (totalSamples / 8) << endl;
+    cout << "Total reader operations: " << totalReaderOps << endl;
+    cout << "Total reader hits: " << totalReaderFound 
+         << " (" << fixed << setprecision(2) 
+         << (100.0 * totalReaderFound) / totalReaderOps << "%)" << endl;
+    cout << "Tree final count: " << tree.Count() << endl;
+    
+    double overallRate = (double)(insertedCount.load() + (totalSamples / 8) + totalReaderOps) / totalTime * 1000.0;
+    cout << "Overall throughput: " << fixed << setprecision(0) 
+         << overallRate << " ops/sec" << endl;
+}
 int main() {
     cout << "=== MlpRangeTree Concurrency Test Suite ===" << endl;
     
@@ -485,11 +908,12 @@ int main() {
     // test_single_writer_multiple_readers_regular_mlpset();
 
     // Then run the range version that fails
-    test_single_writer_multiple_readers();
-    test_concurrent_insertions();
-    test_mixed_operations();
-    test_correctness();
-    test_reader_writer_interaction();
+    // test_single_writer_multiple_readers();
+    // test_concurrent_insertions();
+    // test_mixed_operations();
+    // test_correctness();
+    // test_reader_writer_interaction();
+    test_large_scale_stress(); // Add the new stress test
     
     cout << "\n=== All tests completed ===" << endl;
     
