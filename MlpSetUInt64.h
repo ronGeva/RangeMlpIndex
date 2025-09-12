@@ -3,6 +3,7 @@
 #include "common.h"
 #include <shared_mutex>
 #include <atomic>
+#include <sched.h>      // for sched_getcpu
 
 #include <mutex>
 static std::mutex debug_print_mutex;
@@ -213,22 +214,11 @@ struct CuckooHashTableNode
 	
 	int GetChildNum() const
 	{
-		if (NUM_CHILDREN(generation.load()) <= 7)
-		{
-			return 1 + ((hash >> 18) & 7);
-		}
-
 		return NUM_CHILDREN(generation.load());
 	}
 	
 	void SetChildNum(int k)
 	{
-		if (k <= 8 && k != 0)
-		{
-			hash &= 0xffe3ffffU;
-			hash |= ((k-1) << 18);
-		}
-
 		if (k != 0) {
 			SET_NUM_CHILDREN(generation, k - 1);
 		}
@@ -261,11 +251,11 @@ struct CuckooHashTableNode
 	//
 	void AddChild(int child, uint32_t generation);
 
-	void RevertToInternalBitmap();
+	void RevertToInternalBitmap(std::function<void(void*)> addDeallocationFunc);
 
 	// Remove a child, must exist
 	// Returns whether we now have 0 children
-	bool RemoveChild(int child);
+	bool RemoveChild(int child, std::function<void(void*)> addDeallocationFunc);
 
 	// for debug only, get list of all children in sorted order
 	//
@@ -328,6 +318,27 @@ struct CuckooHashTableNode
 };
 
 static_assert(sizeof(CuckooHashTableNode) == 24, "size of node should be 24");
+
+class ReaderGenerationGuard final {
+public:
+	ReaderGenerationGuard(uint32_t reader_generation, std::function<void(void)> func):
+		m_generation(reader_generation), m_readerEndFunc(func) {}
+
+	~ReaderGenerationGuard()
+	{
+		m_readerEndFunc();
+	}
+
+	// ensure this class is not copy-able
+	ReaderGenerationGuard(const ReaderGenerationGuard& other) = delete;
+	ReaderGenerationGuard& operator=(const ReaderGenerationGuard& other) = delete;
+	
+	uint32_t generation() const { return m_generation; }
+
+private:
+	uint32_t m_generation;
+	std::function<void(void)> m_readerEndFunc;
+};
 
 // This class does not own the main hash table's memory
 // TODO: it should manage the external bitmap memory, but not implemented yet
@@ -475,6 +486,7 @@ public:
                  uint32_t* allPositions1, 
                  uint32_t* allPositions2, 
                  uint32_t* expectedHash,
+				 std::function<ReaderGenerationGuard(void)> generation_getter,
 				 std::atomic<uint32_t>& cur_generation);
 	
 	void ResetGenerations();
@@ -513,6 +525,10 @@ std::atomic<uint32_t> cur_generation;
 	struct Stats
 	{
 		uint32_t m_lowerBoundParentPathStepsHistogram[8];
+
+		// amount of pending de-allocations which weren't freed immediately
+		// counted for every call to remove
+		uint64_t m_numbersOfPendingDeallocationPostponed;
 		Stats();
 		void ClearStats();
 		void ReportStats();
@@ -568,6 +584,22 @@ std::atomic<uint32_t> cur_generation;
 #endif
 
 protected:
+	static constexpr size_t PENDING_ALLOCATIONS_CLEAR_BUFFER = 10;
+
+	static constexpr size_t CACHE_LINE_SIZE = 64;
+
+	struct PerCpuInteger {
+		std::atomic<uint32_t> value;
+		char padding[CACHE_LINE_SIZE - sizeof(std::atomic<uint32_t>)];
+	};
+
+	struct AwaitingDeallocation {
+		void* ptr;
+		uint32_t generation;
+		AwaitingDeallocation(void* buffer, uint32_t current_generation):
+			ptr(buffer), generation(current_generation) {}
+	};
+
 	MlpSet::Promise LowerBoundInternal(uint64_t value, bool& found, uint32_t generation);
 
 	void ClearRootCache(uint64_t value, std::optional<uint64_t> successor);
@@ -577,6 +609,17 @@ protected:
 	void ClearL2Cache(uint64_t value, std::optional<uint64_t> successor);
 
 	std::optional<uint64_t> ClearLowLevelCaches(uint64_t value);
+
+	// must be called for every method that modifies the DS
+	uint32_t IncrementGeneration();
+
+	ReaderGenerationGuard ReaderGeneration();
+
+	void ResetReaderGeneration(int cpu);
+
+	void AddDeallocation(void* ptr);
+
+	void DeallocatePending();
 	
 	// we mmap memory all at once, hold the pointer to the memory chunk
 	// TODO: this needs to changed after we support hash table resizing 
@@ -598,6 +641,11 @@ protected:
 	// hash mapping parts of the tree, starting at lv3
 	//
 	CuckooHashTable m_hashTable;
+
+	std::vector<char> m_readerGenerationsBuffer;
+	PerCpuInteger* m_readerGenerations;
+
+	std::vector<AwaitingDeallocation> m_awaitingDeallocations;
 	
 #ifndef NDEBUG
 	bool m_hasCalledInit;

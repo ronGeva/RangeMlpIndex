@@ -57,6 +57,9 @@ typedef unsigned long long ULL;
 //
 //#define ENABLE_STATS
 
+// uncomment to cause every child bitmap to be allocated as external
+// #define EXTERNAL_BITMAP_ONLY
+
 // According to manual, if mmap uses hugetlb,
 // the munmap length must be a multiple of HugePageSize 
 //

@@ -131,7 +131,7 @@ bool MlpRangeTree::InsertSinglePoint(uint64_t key, void* value) { //
     bool inserted = MlpSet::Insert(key, generation);
     
     if (!inserted) {
-        return false
+        return false;
     }
 
     // Find the node we just inserted

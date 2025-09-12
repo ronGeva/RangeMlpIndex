@@ -239,6 +239,10 @@ void CuckooHashTableNode::Init(int ilen, int dlen, uint64_t dkey, uint32_t hash1
 	
 int CuckooHashTableNode::FindNeighboringEmptySlot()
 {
+	#ifdef EXTERNAL_BITMAP_ONLY
+	return 0;
+	#endif
+
 	int lowbits = reinterpret_cast<uintptr_t>(this) & 63;
 	if (lowbits < 32)
 	{	
@@ -581,7 +585,7 @@ void CuckooHashTableNode::AddChild(int child, uint32_t generation)
 	SetChildNum(k+1);
 }
 
-void CuckooHashTableNode::RevertToInternalBitmap()
+void CuckooHashTableNode::RevertToInternalBitmap(std::function<void(void*)> addDeallocationFunc)
 {
 
 	uint64_t tmpChildMap = 0;
@@ -596,6 +600,9 @@ void CuckooHashTableNode::RevertToInternalBitmap()
 				tmpChildMap |= i;
 			}
 		}
+
+		addDeallocationFunc(reinterpret_cast<void*>(childMap.load()));
+
 		childMap.store(tmpChildMap);
 		goto _leave;
 	}
@@ -638,7 +645,7 @@ _leave:
 	hash &= ~(7 << 21); // mark the node as using internal child map
 }
 
-bool CuckooHashTableNode::RemoveChild(int child)
+bool CuckooHashTableNode::RemoveChild(int child, std::function<void(void*)> addDeallocationFunc)
 {
 	int amountOfChildren = GetChildNum();
 	if (IsUsingInternalChildMap())
@@ -663,7 +670,7 @@ bool CuckooHashTableNode::RemoveChild(int child)
 			smaller = childMap.load() & ((uint64_t(1) << ((pos-2)*8)) - 1);
 		}
 		childMap.store(smaller | larger);
-		goto _Leave; // TODO: this doesn't work, make it work
+		goto _Leave;
 	}
 
 	BitMapSet(child, false);
@@ -672,7 +679,7 @@ bool CuckooHashTableNode::RemoveChild(int child)
 	{
 		// we are using external bitmap, so we need to convert it to internal map
 		// before removing the child
-		RevertToInternalBitmap();
+		RevertToInternalBitmap(addDeallocationFunc);
 	}
 
 	SetChildNum(amountOfChildren - 1);
@@ -1058,11 +1065,13 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCP(uint64_t key,
                                             uint32_t* allPositions1, 
                                             uint32_t* allPositions2, 
                                             uint32_t* expectedHash,
+											std::function<ReaderGenerationGuard(void)> generation_getter,
 											std::atomic<uint32_t>& cur_generation)
 {
 	while (true)
 	{
-		uint32_t generation = cur_generation.load();
+		ReaderGenerationGuard generation_guard = generation_getter();
+		uint32_t generation = generation_guard.generation();
 		// LockGuard lock(&displacement_mutex, true);
 		int ret = QueryLCPInternal(key, idxLen, allPositions1, allPositions2, expectedHash, generation);
 		if (generation > cur_generation.load()) {
@@ -1157,15 +1166,6 @@ int ALWAYS_INLINE CuckooHashTable::QueryLCPInternal(uint64_t key,
 #endif
 		return 2;
 	}
-
-#ifndef NDEBUG
-	{
-		uint32_t hash18bit = XXH::XXHashFn3(key, len + 1);
-		hash18bit = hash18bit & ((1<<18) - 1);
-		uint32_t expectedx = hash18bit | (len << 27) | 0x80000000U;
-		assert((ht[allPositions1[len]].hash & 0xf803ffffU) == expectedx);
-	}
-#endif
 
 	int shiftLen = 64 - 8 * (len + 1);
 	if (unlikely((ht[allPositions1[len]].minKey >> shiftLen) != (key >> shiftLen))) goto _slowpath;
@@ -1351,6 +1351,7 @@ MlpSet::~MlpSet()
 MlpSet::Stats::Stats()
 {
 	memset(m_lowerBoundParentPathStepsHistogram, 0, sizeof m_lowerBoundParentPathStepsHistogram);
+	m_numbersOfPendingDeallocationPostponed = 0;
 }
 		
 void MlpSet::Stats::ClearStats()
@@ -1449,6 +1450,16 @@ void MlpSet::Init(uint32_t maxSetSize)
 	memset(m_memoryPtr, 0, m_allocatedSize);
 
 	cur_generation.store(0);
+
+	int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	ReleaseAssert(num_cpus > 0);
+
+	m_readerGenerationsBuffer.resize(sizeof(PerCpuInteger) * num_cpus);
+	m_readerGenerations = reinterpret_cast<PerCpuInteger*>(m_readerGenerationsBuffer.data());
+	for (size_t i = 0; i < num_cpus; i++)
+	{
+		m_readerGenerations[i].value.store(UINT32_MAX);
+	}
 }
 
 void MlpSet::ClearL1Cache(uint64_t value, std::optional<uint64_t> successor)
@@ -1536,6 +1547,87 @@ std::optional<uint64_t> MlpSet::ClearLowLevelCaches(uint64_t value)
 	ClearL2Cache(value, opt_successor);
 	return opt_successor;
 }
+
+uint32_t MlpSet::IncrementGeneration()
+{
+	uint32_t cur_gen = cur_generation.load() + 1;
+	ResetGenerationsIfNeeded(cur_gen);
+	return cur_gen;
+}
+
+void MlpSet::ResetReaderGeneration(int cpu)
+{
+	m_readerGenerations[cpu].value.store(UINT32_MAX);
+}
+
+void MlpSet::AddDeallocation(void* ptr)
+{
+	m_awaitingDeallocations.push_back(AwaitingDeallocation(ptr, cur_generation.load()));
+}
+
+ReaderGenerationGuard MlpSet::ReaderGeneration()
+{
+	uint32_t gen = cur_generation.load();
+
+	int cpu = sched_getcpu();
+	m_readerGenerations[cpu].value.store(gen);
+
+	return ReaderGenerationGuard(gen,
+								 [this, cpu]()
+								 {
+									ResetReaderGeneration(cpu);
+								 });
+}
+
+void MlpSet::DeallocatePending()
+{
+	// We'll wait for this amount of pending allocations before we attempt
+	// to clear them.
+	//
+	// This will in turn reduce the contention the removing thread has with
+	// the reader threads, while still maintaining a relatively small amount
+	// of allocated unused buffers.
+	if (m_awaitingDeallocations.size() < PENDING_ALLOCATIONS_CLEAR_BUFFER)
+		return;
+
+	// Go through the current readers' generations.
+	// Note that this entail contention with the readers for the cache lines
+	// of those addresses, so we must minimize the amount of time this code
+	// is being executed.
+	uint32_t readers_min_generation = UINT32_MAX;
+	for (size_t i = 0; i < m_readerGenerationsBuffer.size() / sizeof(PerCpuInteger); i++)
+	{
+		PerCpuInteger& generation = m_readerGenerations[i];
+		readers_min_generation = min(readers_min_generation, generation.value.load());
+	}
+
+	size_t i = 0;
+	for (i = 0; i < m_awaitingDeallocations.size(); i++)
+	{
+		if (m_awaitingDeallocations[i].generation >= readers_min_generation)
+		{
+			#ifdef ENABLE_STATS
+			stats.m_numbersOfPendingDeallocationPostponed++;
+			#endif
+
+			// The allocations are pushed back into the m_waitingDeallocation vector
+			// which means they appear in it in increasing generation order.
+			//
+			// Therefore, if we ran into an allocation which conflicts with
+			// some reader's current generation, all of the next awaiting allocations
+			// are guaranteed to conflict with it as well.
+			// We can exit then.
+			break;
+		}
+
+		// deallocate the buffer
+		delete[] m_awaitingDeallocations[i].ptr;
+	}
+
+	// delete all the pending allocations that were freed
+	m_awaitingDeallocations.erase(m_awaitingDeallocations.begin(), m_awaitingDeallocations.begin() + i);
+}
+
 bool MlpSet::Remove(uint64_t value, uint32_t generation)
 {
 	uint32_t ilen;
@@ -1558,13 +1650,11 @@ bool MlpSet::Remove(uint64_t value, uint32_t generation)
 		return false;
 	}
 
-
 	uint32_t cur_gen = generation;
 	bool should_take_generation = generation == UINT32_MAX;
 	if (should_take_generation) {
-		generation = cur_generation.load() + 1;
-		ResetGenerationsIfNeeded(cur_gen);
-	}
+		cur_gen = IncrementGeneration();
+	}	
 
 	std::optional<uint64_t> opt_successor = ClearLowLevelCaches(value);
 
@@ -1602,7 +1692,7 @@ bool MlpSet::Remove(uint64_t value, uint32_t generation)
 		if (remove_child && m_hashTable.ht[pos].ExistChild(child))
 		{
 			m_hashTable.ht[pos].SetGeneration(cur_gen);
-			bool zero_children = m_hashTable.ht[pos].RemoveChild(child);
+			bool zero_children = m_hashTable.ht[pos].RemoveChild(child, [this](void* ptr){AddDeallocation(ptr);});
 			remove_child = false;
 			if (!zero_children)
 				continue;
@@ -1618,6 +1708,8 @@ bool MlpSet::Remove(uint64_t value, uint32_t generation)
 		cur_generation.store(cur_gen);
 	}
 
+	DeallocatePending();
+
 	return true;
 }
 
@@ -1627,10 +1719,8 @@ bool MlpSet::Insert(uint64_t value, uint32_t generation)
 	bool should_take_generation = generation == UINT32_MAX;
 	uint32_t cur_gen = generation;
 	if (should_take_generation) {
-		cur_gen = cur_generation.load() + 1;
-		ResetGenerationsIfNeeded(cur_gen);
-	}
-	
+		cur_gen = IncrementGeneration();
+	}	
 	int lcpLen;
 	// Handle LCP < 2 case first
 	// This is supposed to be a L1 hit (working set 8KB)
@@ -1881,7 +1971,11 @@ bool MlpSet::Exist(uint64_t value)
 		                              allPositions1 /*out*/, 
 		                              allPositions2 /*out*/, 
 		                              expectedHash /*out*/,
-									  cur_generation /*generation*/);
+									  [this]() {return ReaderGeneration();} /*generation*/,
+									  cur_generation /*cur_generation*/);
+	if (lcpLen != 8) {
+		DEBUG("lcpLen=" << lcpLen << " value=" << value);
+	}
 	return (lcpLen == 8);
 }
 
@@ -2138,7 +2232,9 @@ MlpSet::Promise MlpSet::LowerBound(uint64_t value)
 uint64_t MlpSet::LowerBound(uint64_t value, bool& found)
 {
 	do {
-		uint32_t generation = cur_generation.load();
+		// LockGuard lock(&displacement_mutex, true);
+		ReaderGenerationGuard generation_guard = ReaderGeneration();
+		uint32_t generation = generation_guard.generation();
 		Promise p = LowerBoundInternal(value, found, generation);
 		if (generation > cur_generation.load()) {
 			// this implies that the generation was reset, so we need to retry.

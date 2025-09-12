@@ -390,6 +390,10 @@ TEST(MlpSetUInt64, SequentialInsertThenRemove)
     printf("Writer total time: %.3f ms, Elements: %llu, Final removed: %llu\n", 
            wms, (unsigned long long)kNumElements, (unsigned long long)removedCount.load());
     printf("Total successful reader operations: %llu\n", (unsigned long long)totalReaderOps);
+
+    #ifdef ENABLE_STATS
+    printf("Pending deallocations postponed: %llu\n", ms.stats.m_numbersOfPendingDeallocationPostponed);
+    #endif
 }
 
 // Test 2: Random order insert then remove in same order with concurrent readers  
