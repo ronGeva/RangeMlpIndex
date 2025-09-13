@@ -285,6 +285,7 @@ TEST(MlpSetUInt64, VitroCuckooHashLogicCorrectness)
 //
 TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 {
+	std::atomic<uint32_t> writer_generation = UINT32_MAX;
 	const int HtSize = 1 << 15;
 	uint64_t allocatedArrLen = uint64_t(HtSize + 20) * sizeof(MlpSetUInt64::CuckooHashTableNode) + 256;
 	void* allocatedPtr = mmap(NULL, 
@@ -437,7 +438,7 @@ TEST(MlpSetUInt64, VitroCuckooHashQueryLcpCorrectness)
 			                         allPositions2 /*out*/, 
 			                         expectedHash /*out*/,
 									 []() { return MlpSetUInt64::ReaderGenerationGuard(0, [](){});},
-									 UINT32_MAX /*cur_generation*/);
+									 writer_generation /*cur_generation*/);
 			actualAnswers[i].first = lcpLen;
 			if (lcpLen == 2)
 			{
