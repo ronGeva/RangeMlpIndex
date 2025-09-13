@@ -71,7 +71,8 @@ MlpRangeTree::NodeResult MlpRangeTree::QueryLCPWithNode(uint64_t key, uint32_t g
 
 void* MlpRangeTree::Load(uint64_t key) {
     while (true) {
-        uint32_t generation = cur_generation.load();
+        ReaderGenerationGuard generation_guard = ReaderGeneration();
+        uint32_t generation = generation_guard.generation();
         NodeResult result = QueryLCPWithNode(key, generation);
         
         if (!result.generationValid) {
@@ -380,7 +381,8 @@ bool MlpRangeTree::Erase(uint64_t key) { //
 
 bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& rangeEnd, void*& value) {
     while (true) {
-        uint32_t generation = cur_generation.load();
+        ReaderGenerationGuard generation_guard = ReaderGeneration();
+        uint32_t generation = generation_guard.generation();
         NodeResult result = QueryLCPWithNode(from, generation);
         if (!result.generationValid) {
             continue;
