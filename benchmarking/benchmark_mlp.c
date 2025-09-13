@@ -254,13 +254,22 @@ typedef struct _BenchmarkDSettings {
 	int duration_seconds;
 } BenchmarkDSettings;
 
+#ifndef INT_MAX
+#define INT_MAX 0x7fffffff
+#endif
+
+#ifndef min
+#define min(x, y) x > y ? (y) : (x)
+#endif
+
 // generate a range contained in [4096, INT_MAX]
-void generate_random_range(int* start, int* end)
+void generate_random_range(int* start, int* end, int max_range)
 {
-	unsigned int values_range = 0x7fffffff;
+	unsigned int values_range = INT_MAX;
 	*start = (((unsigned int)rand() % values_range) + 4096) % values_range;
 
 	int remaining_range = values_range - *start;
+	remaining_range = min(remaining_range, max_range);
 	if (remaining_range)
 	{
 		*end = *start;
@@ -347,7 +356,7 @@ void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* set
 				else
 				{
 					int start, end;
-					generate_random_range(&start, &end);
+					generate_random_range(&start, &end, INT_MAX);
 					writer_operations[i].insert_range_entry = NULL;
 					writer_operations[i].insert_range_first = start;
 					writer_operations[i].insert_range_last = end;
@@ -477,6 +486,7 @@ typedef struct _BenchmarkSettingsRandom {
 	int duration_seconds;
 	int initial_inserts;
 	int writer_operation_count;
+	int max_range;
 } BenchmarkSettingsRandom;
 
 typedef enum _BenchmarkSettingsMultipleRandomType {
@@ -492,6 +502,7 @@ typedef enum _BenchmarkSettingsMultipleRandomType {
 	BmRandomSettingsInitialInsertsStart,
 	BmRandomSettingsInitialInsertsEnd,
 	BmRandomSettingsWriterOperationCount,
+	BmRandomSettingsMaxRange,
 	BmRandomSettingsMax
 } BenchmarkSettingsMultipleRandomType;
 
@@ -512,15 +523,17 @@ void bm_get_random_settings_from_file(char* path, int settings[BmRandomSettingsM
     fclose(fp);
 }
 
-void bm_insert_random_ranges(BenchmarkTree* tree, int amount_of_inserts)
+void bm_insert_random_ranges(BenchmarkTree* tree, BenchmarkSettingsRandom* settings)
 {
 	BenchmarkOperation* writer_operations = NULL;
 	srand(time(NULL));
+
+	int amount_of_inserts = settings->initial_inserts;
 	writer_operations = malloc(sizeof(BenchmarkOperation) * amount_of_inserts);
 	for (int i = 0; i < amount_of_inserts; i++)
 	{
 		int start, end;
-		generate_random_range(&start, &end);
+		generate_random_range(&start, &end, settings->max_range);
 		writer_operations[i].insert_range_entry = NULL;
 		writer_operations[i].insert_range_first = start;
 		writer_operations[i].insert_range_last = end;
@@ -551,7 +564,7 @@ BenchmarkOperation* bm_create_random_writer_operations(BenchmarkSettingsRandom* 
 		else
 		{
 			int start, end;
-			generate_random_range(&start, &end);
+			generate_random_range(&start, &end, settings->max_range);
 			writer_operations[i].insert_range_entry = NULL;
 			writer_operations[i].insert_range_first = start;
 			writer_operations[i].insert_range_last = end;
@@ -602,7 +615,7 @@ void bm_run_workload_random_accesses(BenchmarkTree* tree, BenchmarkSettingsRando
 	BenchmarkOperation** reader_operations_array = NULL;
 	pthread_t* threads = NULL;
 
-	bm_insert_random_ranges(tree, settings->initial_inserts);
+	bm_insert_random_ranges(tree, settings);
 
 	writer_operations = bm_create_random_writer_operations(settings);
 	reader_operations_array = bm_create_random_reader_operations(settings);
@@ -666,10 +679,11 @@ void bm_run_workload_random_accesses(BenchmarkTree* tree, BenchmarkSettingsRando
 	readers_operations /= settings->number_of_readers;
 
 	printf("Benchmark E: average reader operation cycles done in %d seconds=%llu, readers=%d, init_inserts=%d"
-		   ", precentage_find=%d, writer_on=%d, writer_ops_count=%d, reader ops per cycle=%d\n",
+		   ", precentage_find=%d, writer_on=%d, writer_ops_count=%d, reader ops per cycle=%d"
+		   ", max_range=%d\n",
 		   settings->duration_seconds, readers_operations, settings->number_of_readers, settings->initial_inserts,
 		   settings->perecentage_find_operations, settings->writer_on, settings->writer_operation_count,
-		   settings->number_of_reader_operations);
+		   settings->number_of_reader_operations, settings->max_range);
 
 	// free resources
 	for (int i = 0; i < settings->number_of_readers; i++)
@@ -716,7 +730,8 @@ void bm_run_workloadE(BenchmarkTree* tree)
 						.writer_on = writer_on,
 						.number_of_readers = readers_count,
 						.initial_inserts = initial_inserts,
-						.perecentage_find_operations = percentage_find
+						.perecentage_find_operations = percentage_find,
+						.max_range = setting_params[BmRandomSettingsMaxRange]
 					};
 
 					bm_run_workload_random_accesses(tree, &settings);
