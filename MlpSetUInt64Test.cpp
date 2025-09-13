@@ -1047,7 +1047,6 @@ TEST(MlpSetUInt64, WorkloadA_16M_Dep)
 		sum += workload.results[i];
 	}
 	printf("Finished %d queries %d positives\n", int(workload.numOperations), int(sum));
->>>>>>> remotes/origin/master
 }
 
 void test_basic_range() {
