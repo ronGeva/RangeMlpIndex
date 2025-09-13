@@ -1321,6 +1321,27 @@ std::vector<uint64_t> read_from_file(const char* filename)
 	return numbers;
 }
 
+void write_to_file(const std::vector<uint64_t>& numbers, const char* filename)
+{
+    // Open the file in binary mode for writing. std::ios::binary prevents text-mode translations.
+    std::ofstream output_file(filename, std::ios::out | std::ios::binary);
+
+    // Check if the file was opened successfully.
+    if (!output_file.is_open()) {
+        std::cerr << "Error: Could not open file " << filename << " for writing." << std::endl;
+        return;
+    }
+
+    // Write the entire vector's content to the file in a single operation.
+    // random_numbers.data() gets a pointer to the raw data buffer.
+    // random_numbers.size() * sizeof(unsigned long long) gives the total size in bytes.
+    output_file.write(reinterpret_cast<const char*>(numbers.data()),
+					  numbers.size() * sizeof(unsigned long long));
+
+    // Close the file stream.
+    output_file.close();
+}
+
 void generate_input(std::vector<uint64_t>& insertions, std::vector<uint64_t>& removals, bool use_predefined)
 {
 	if (use_predefined)
