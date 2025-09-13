@@ -7,7 +7,7 @@
 using namespace MlpSetUInt64;
 using namespace std;
 
-#define TEST(name) cout << "\n=== Testing: " << name << " ===" << endl;
+#define TEST_PRINT(name) cout << "\n=== Testing: " << name << " ===" << endl;
 #define ASSERT(cond) do { \
     if (!(cond)) { \
         cout << "FAILED: " << #cond << " at line " << __LINE__ << endl; \
@@ -17,7 +17,7 @@ using namespace std;
 #define PASS() cout << "  ✓ Passed" << endl;
 
 void test_single_points() {
-    TEST("Single Point Operations");
+    TEST_PRINT("Single Point Operations");
     
     MlpRangeTree tree;
     tree.Init(100000);
@@ -1050,7 +1050,7 @@ TEST(MlpSetUInt64, WorkloadA_16M_Dep)
 }
 
 void test_basic_range() {
-    TEST("Basic Range Operations");
+    TEST_PRINT("Basic Range Operations");
     
     MlpRangeTree tree;
     tree.Init(100000);
@@ -1073,7 +1073,7 @@ void test_basic_range() {
 }
 
 void test_range_overwrite() {
-    TEST("Range Overwrite");
+    TEST_PRINT("Range Overwrite");
     
     MlpRangeTree tree;
     tree.Init(100000);
@@ -1101,7 +1101,7 @@ void test_range_overwrite() {
 }
 
 void test_erase() {
-    TEST("Erase Operations");
+    TEST_PRINT("Erase Operations");
     
     MlpRangeTree tree;
     tree.Init(100000);
@@ -1123,7 +1123,7 @@ void test_erase() {
 }
 
 void test_mixed_operations() {
-    TEST("Mixed Single Points and Ranges");
+    TEST_PRINT("Mixed Single Points and Ranges");
     
     MlpRangeTree tree;
     tree.Init(100000);
@@ -1161,7 +1161,7 @@ void test_mixed_operations() {
 }
 
 void test_find_next() {
-    TEST("FindNext Operation");
+    TEST_PRINT("FindNext Operation");
     
     MlpRangeTree tree;
     tree.Init(100000);
@@ -1198,7 +1198,7 @@ void test_find_next() {
 }
 
 void test_large_scale() {
-    TEST("Large Scale Operations");
+    TEST_PRINT("Large Scale Operations");
     
     MlpRangeTree tree;
     tree.Init(1000000);
@@ -1229,7 +1229,7 @@ void test_large_scale() {
 }
 
 void test_edge_cases() {
-    TEST("Edge Cases");
+    TEST_PRINT("Edge Cases");
     
     MlpRangeTree tree;
     tree.Init(100000);
