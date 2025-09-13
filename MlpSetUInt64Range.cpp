@@ -414,7 +414,7 @@ bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& range
                     } else if (!endResult.generationValid) {
                         continue;
                     }
-                    if (endResult.node->LoadGeneration() > generation) {
+                    if (!endResult.found || (endResult.node->LoadGeneration() > generation)) {
                         continue;
                     }
                 }
@@ -433,7 +433,8 @@ bool MlpRangeTree::FindNext(uint64_t from, uint64_t& rangeStart, uint64_t& range
                     } else if (!startResult.generationValid) {
                         continue;
                     }
-                    if (startResult.node->LoadGeneration() > generation) {
+                    if (!startResult.found ||
+                        (startResult.node->LoadGeneration() > generation)) {
                         continue;
                     }
                 }
