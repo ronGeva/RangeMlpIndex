@@ -479,6 +479,39 @@ typedef struct _BenchmarkSettingsRandom {
 	int writer_operation_count;
 } BenchmarkSettingsRandom;
 
+typedef enum _BenchmarkSettingsMultipleRandomType {
+	BmRandomSettingsNumberOfReadersStart = 0,
+	BmRandomSettingsNumberOfReadersEnd,
+	BmRandomSettingsNumberOfReadersAdditionPerIteration,
+	BmRandomSettingsWriterOnStart,
+	BmRandomSettingsWriterOnEnd,
+	BmRandomSettingsReaderOpeartionCount,
+	BmRandomSettingsPrecentageFindOperationsStart,
+	BmRandomSettingsPrecentageFindOperationsEnd,
+	BmRandomSettingsDurationSeconds,
+	BmRandomSettingsInitialInsertsStart,
+	BmRandomSettingsInitialInsertsEnd,
+	BmRandomSettingsWriterOperationCount,
+	BmRandomSettingsMax
+} BenchmarkSettingsMultipleRandomType;
+
+void bm_get_random_settings_from_file(char* path, int settings[BmRandomSettingsMax])
+{
+	FILE *fp = fopen(path, "r");
+    if (!fp) {
+        printf("Failed to open %s\n", path);
+        return;
+    }
+
+    size_t count = 0;
+
+    while (count < BmRandomSettingsMax && fscanf(fp, "%d", &settings[count]) == 1) {
+        count++;
+    }
+
+    fclose(fp);
+}
+
 void bm_insert_random_ranges(BenchmarkTree* tree, int amount_of_inserts)
 {
 	BenchmarkOperation* writer_operations = NULL;
@@ -632,10 +665,11 @@ void bm_run_workload_random_accesses(BenchmarkTree* tree, BenchmarkSettingsRando
 	}
 	readers_operations /= settings->number_of_readers;
 
-	printf("Benchmark E: average reader operations done in %d seconds=%llu, readers=%d, init_inserts=%d"
-		   ", precentage_find=%d, writer_on=%d, writer_ops_count=%d\n",
+	printf("Benchmark E: average reader operation cycles done in %d seconds=%llu, readers=%d, init_inserts=%d"
+		   ", precentage_find=%d, writer_on=%d, writer_ops_count=%d, reader ops per cycle=%d\n",
 		   settings->duration_seconds, readers_operations, settings->number_of_readers, settings->initial_inserts,
-		   settings->perecentage_find_operations, settings->writer_on, settings->writer_operation_count);
+		   settings->perecentage_find_operations, settings->writer_on, settings->writer_operation_count,
+		   settings->number_of_reader_operations);
 
 	// free resources
 	for (int i = 0; i < settings->number_of_readers; i++)
@@ -656,19 +690,29 @@ void bm_run_workload_random_accesses(BenchmarkTree* tree, BenchmarkSettingsRando
 
 void bm_run_workloadE(BenchmarkTree* tree)
 {
+	int setting_params[BmRandomSettingsMax];
+	bm_get_random_settings_from_file("workload_e", setting_params);
+
 	// modify the for loops to control the settings of the benchmark
-	for (int writer_on = 1; writer_on < 2; writer_on++)
+	for (int writer_on = setting_params[BmRandomSettingsWriterOnStart];
+		 writer_on <= setting_params[BmRandomSettingsWriterOnEnd]; writer_on++)
 	{
-		for (int readers_count = 1; readers_count <= 8; readers_count *= 2)
+		for (int readers_count = setting_params[BmRandomSettingsNumberOfReadersStart];
+			 readers_count <= setting_params[BmRandomSettingsNumberOfReadersEnd];
+			 readers_count += setting_params[BmRandomSettingsNumberOfReadersAdditionPerIteration])
 		{
-			for (int initial_inserts = 100; initial_inserts <= 100000; initial_inserts*=10)
+			for (int initial_inserts = setting_params[BmRandomSettingsInitialInsertsStart];
+				 initial_inserts <= setting_params[BmRandomSettingsInitialInsertsEnd];
+				 initial_inserts*=10)
 			{
-				for (int percentage_find = 20; percentage_find < 100; percentage_find+=20)
+				for (int percentage_find = setting_params[BmRandomSettingsPrecentageFindOperationsStart];
+					 percentage_find <= setting_params[BmRandomSettingsPrecentageFindOperationsEnd];
+					 percentage_find+=20)
 				{
 					BenchmarkSettingsRandom settings = {
-						.duration_seconds = 2,
-						.writer_operation_count = 10000000,
-						.number_of_reader_operations = 10000,
+						.duration_seconds = setting_params[BmRandomSettingsDurationSeconds],
+						.writer_operation_count = setting_params[BmRandomSettingsWriterOperationCount],
+						.number_of_reader_operations = setting_params[BmRandomSettingsReaderOpeartionCount],
 						.writer_on = writer_on,
 						.number_of_readers = readers_count,
 						.initial_inserts = initial_inserts,
