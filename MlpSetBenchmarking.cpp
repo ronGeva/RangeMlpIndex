@@ -1,5 +1,6 @@
 #include "common.h"
 #include "MlpSetUInt64.h"
+#include "MlpSetUInt64Range.h"
 
 #include "gtest/gtest.h"
 
@@ -62,6 +63,66 @@ TEST(MlpSetBenchmarking, MlpSetBenchmarkC)
     BenchmarkTree bm_tree;
     MlpSetInitBmTree(s, bm_tree);
     bm_run_workloadC(&bm_tree);
+}
+
+int MlpRangeBmInsertRange(void* tree, unsigned long first,
+		                unsigned long last, void *entry)
+{
+    MlpSetUInt64::MlpRangeTree* t = reinterpret_cast<MlpSetUInt64::MlpRangeTree*>(tree);
+    return t->InsertRange(first, last, entry);
+}
+
+void* MlpRangeBmFind(void* tree, unsigned long long* index, unsigned long long max)
+{
+    MlpSetUInt64::MlpRangeTree* t = reinterpret_cast<MlpSetUInt64::MlpRangeTree*>(tree);
+    void* entry;
+    uint64_t index_u64 = *index;
+    uint64_t max_u64 = max;
+
+    bool success = t->FindNext(index_u64, index_u64, max_u64, entry);
+    if (success)
+    {
+        *index = index_u64;
+        return entry;
+    }
+
+    return NULL;
+}
+
+void* MlpRangeBmLoad(void* tree, unsigned long long index)
+{
+	MlpSetUInt64::MlpRangeTree* t = reinterpret_cast<MlpSetUInt64::MlpRangeTree*>(tree);
+    return t->Load(index);
+}
+
+void* MlpRangeBmErase(void* tree, unsigned long long index)
+{
+    MlpSetUInt64::MlpRangeTree* t = reinterpret_cast<MlpSetUInt64::MlpRangeTree*>(tree);
+    t->Erase(index);
+
+    return NULL;
+}
+
+void MlpRangeInitBmTree(MlpSetUInt64::MlpRangeTree& t, BenchmarkTree& bm_tree)
+{
+    t.Init(4194304);
+    memset(&bm_tree, 0, sizeof(bm_tree));
+    bm_tree.tree = &t;
+
+    bm_tree.InsertRange = &MlpRangeBmInsertRange;
+    bm_tree.Find = &MlpRangeBmFind;
+    bm_tree.Load = &MlpRangeBmLoad;
+    bm_tree.Erase = &MlpRangeBmErase;
+}
+
+TEST(MlpRangeBenchmarking, MlpRangeBenchmarkE)
+{
+    MlpSetUInt64::MlpRangeTree tree;
+    BenchmarkTree bm_tree;
+
+    MlpRangeInitBmTree(tree, bm_tree);
+
+    bm_run_workloadE(&bm_tree);
 }
 
 } // anonymous namespace
