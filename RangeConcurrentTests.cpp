@@ -901,7 +901,7 @@ void test_large_scale_stress() {
     cout << "Overall throughput: " << fixed << setprecision(0) 
          << overallRate << " ops/sec" << endl;
 }
-int main() {
+int main_() {
     cout << "=== MlpRangeTree Concurrency Test Suite ===" << endl;
     
     // First run the regular MlpSet test to prove it works
