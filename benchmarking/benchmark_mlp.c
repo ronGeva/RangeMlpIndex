@@ -254,6 +254,23 @@ typedef struct _BenchmarkDSettings {
 	int duration_seconds;
 } BenchmarkDSettings;
 
+// generate a range contained in [4096, INT_MAX]
+void generate_random_range(int* start, int* end)
+{
+	unsigned int values_range = 0x7fffffff;
+	*start = (((unsigned int)rand() % values_range) + 4096) % values_range;
+
+	int remaining_range = values_range - *start;
+	if (remaining_range)
+	{
+		*end = *start;
+	}
+	else
+	{
+		*end = *start + (rand() % remaining_range);
+	}
+}
+
 void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* settings)
 {
 	WorkLoadRoutineContext* reader_contexts = NULL;
@@ -329,9 +346,8 @@ void bm_run_workloadD_with_settings(BenchmarkTree* tree, BenchmarkDSettings* set
 				}
 				else
 				{
-					int start = rand();
-					int possible_range = 0x7fffffff - start;
-					int end = start + (rand() % possible_range);
+					int start, end;
+					generate_random_range(&start, &end);
 					writer_operations[i].insert_range_entry = NULL;
 					writer_operations[i].insert_range_first = start;
 					writer_operations[i].insert_range_last = end;
@@ -470,9 +486,8 @@ void bm_insert_random_ranges(BenchmarkTree* tree, int amount_of_inserts)
 	writer_operations = malloc(sizeof(BenchmarkOperation) * amount_of_inserts);
 	for (int i = 0; i < amount_of_inserts; i++)
 	{
-		int start = rand();
-		int possible_range = 0x7fffffff - start;
-		int end = start + (rand() % possible_range);
+		int start, end;
+		generate_random_range(&start, &end);
 		writer_operations[i].insert_range_entry = NULL;
 		writer_operations[i].insert_range_first = start;
 		writer_operations[i].insert_range_last = end;
@@ -502,9 +517,8 @@ BenchmarkOperation* bm_create_random_writer_operations(BenchmarkSettingsRandom* 
 		}
 		else
 		{
-			int start = rand();
-			int possible_range = 0x7fffffff - start;
-			int end = start + (rand() % possible_range);
+			int start, end;
+			generate_random_range(&start, &end);
 			writer_operations[i].insert_range_entry = NULL;
 			writer_operations[i].insert_range_first = start;
 			writer_operations[i].insert_range_last = end;
