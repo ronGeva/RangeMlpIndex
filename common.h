@@ -53,6 +53,10 @@ typedef unsigned long long ULL;
 // #define HUGEPAGESIZE_BYTES 2097152
 #define HUGEPAGESIZE_BYTES 1073741824
 
+#ifndef UINT32_MAX
+#define UINT32_MAX 0xffffffff
+#endif
+
 // uncomment to enable stats-related code for analysis
 //
 //#define ENABLE_STATS
